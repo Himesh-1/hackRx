@@ -39,38 +39,46 @@ class DecisionEngine:
     def make_decision(self, parsed_query: ParsedQuery, retrieved_chunks: List[Tuple[EmbeddedChunk, float]]) -> Dict[str, Any]:
         """
         Makes a decision based on the parsed query and retrieved chunks.
-
-        Args:
-            parsed_query: The ParsedQuery object.
-            retrieved_chunks: A list of tuples containing retrieved chunks and their scores.
-
-        Returns:
-            A dictionary containing the decision, justification, and other relevant information.
         """
         logger.info(f"Making decision for query: '{parsed_query.original_query}'")
-
         prompt = self._construct_prompt(parsed_query, retrieved_chunks)
 
         try:
             model = genai.GenerativeModel(self.model_name)
             response = model.generate_content(prompt)
-            decision_json = response.text
-            decision = json.loads(decision_json)
-            logger.info(f"Decision made successfully: {decision.get('decision')}")
-            return decision
+            logger.info(f"Gemini raw response: {response.text!r}")
+            if not response.text or not response.text.strip():
+                return {
+                    "error": "Gemini API returned an empty response.",
+                    "details": "No content received from LLM."
+                }
+            try:
+                cleaned = response.text.strip()
+                # Remove markdown code block formatting if present
+                if cleaned.startswith('```'):
+                    cleaned = cleaned.lstrip('`')
+                    if cleaned.lower().startswith('json'):
+                        cleaned = cleaned[4:].lstrip('\n')
+                    cleaned = cleaned.rstrip('`').strip()
+                logger.info(f"Cleaned Gemini response for JSON parsing: {cleaned}")
+                decision = json.loads(cleaned)
+                logger.info(f"Decision made successfully: {decision.get('decision')}")
+                return decision
+            except json.JSONDecodeError as jde:
+                logger.error(f"JSON decode error: {jde}")
+                return {
+                    "error": "Gemini API did not return valid JSON.",
+                    "details": response.text
+                }
         except Exception as e:
-            logger.error(f"Error during Gemini API call: {e}")
+            logger.error(f"Error during Gemini API call: {e}", exc_info=True)
             return {
                 "error": "Failed to get a response from the language model.",
                 "details": str(e)
             }
 
     def _construct_prompt(self, parsed_query: ParsedQuery, retrieved_chunks: List[Tuple[EmbeddedChunk, float]]) -> str:
-        """
-        Constructs the prompt for the LLM.
-        """
         context = "\n".join([f"--- Chunk from {chunk.chunk.source_document} ---\n{chunk.chunk.content}" for chunk, score in retrieved_chunks])
-
         prompt = f"""
         Please analyze the following insurance query and the provided document excerpts to make a final decision.
 
@@ -107,7 +115,7 @@ class DecisionEngine:
         - The payout_amount should be based on the claim details and policy limits, if available.
         - Reference the specific clauses from the documents that support your decision.
 
-        Provide only the JSON response.
+        Provide only the JSON response. Respond ONLY with valid JSON. Do not include any extra text or explanation.
         """
         return prompt
 
