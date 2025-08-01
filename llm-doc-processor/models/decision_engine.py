@@ -21,7 +21,7 @@ class DecisionEngine:
     Makes a decision using an LLM based on the query and retrieved document chunks.
     """
 
-    def __init__(self, model_name: str = "gpt-3.5-turbo", temperature: float = 0.1):
+    def __init__(self, model_name: str = "gemini-1.5-pro", temperature: float = 0.1):
         """
         Initialize the Decision Engine.
 
@@ -113,9 +113,9 @@ class DecisionEngine:
 
 # Example usage (for testing purposes)
 if __name__ == '__main__':
-    # This requires an OPENAI_API_KEY to be set in the environment.
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Skipping DecisionEngine test: OPENAI_API_KEY not set.")
+    # This requires a GEMINI_API_KEY to be set in the environment.
+    if not os.getenv("GEMINI_API_KEY"):
+        print("Skipping DecisionEngine test: GEMINI_API_KEY not set.")
     else:
         # 1. Initialize Decision Engine
         decision_engine = DecisionEngine()

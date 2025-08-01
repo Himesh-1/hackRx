@@ -19,14 +19,14 @@ EMBEDDINGS_DIR = DATA_DIR / "embeddings"
 
 # --- Gemini Configuration ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-DECISION_ENGINE_MODEL = "gemini-1.5-pro"
+DECISION_ENGINE_MODEL = "gemini-1.5-flash"
 
 # --- Embedding Configuration ---
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 EMBEDDING_PROVIDER = "sentence_transformers"
 
 # --- Retriever Configuration ---
-TOP_K_RETRIEVAL = 5
+TOP_K_RETRIEVAL = 3
 
 # --- API Configuration ---
 API_TITLE = "LLM Document Processor API"

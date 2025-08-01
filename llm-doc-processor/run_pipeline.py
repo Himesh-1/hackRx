@@ -30,8 +30,8 @@ def run_pipeline():
     from models.query_parser import QueryParser
 
     print("--- Starting End-to-End Pipeline Test ---")
-    if not config.OPENAI_API_KEY:
-        print("\nERROR: OPENAI_API_KEY is not set. Please set it in the .env file.")
+    if not config.GEMINI_API_KEY:
+        print("\nERROR: GEMINI_API_KEY is not set. Please set it in the .env file.")
         return
 
     print("\nStep 1: Loading documents...")
