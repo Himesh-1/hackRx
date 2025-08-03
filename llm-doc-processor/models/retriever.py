@@ -39,7 +39,7 @@ class Retriever:
         """Builds the FAISS index from the embedded chunks."""
         logger.info("Building FAISS index...")
         embedding_dim = self.embedded_chunks[0].embedding_dim
-        self.index = faiss.IndexFlatL2(embedding_dim)  # Using L2 distance for similarity
+        self.index = faiss.IndexFlatIP(embedding_dim)  # Using Inner Product for cosine similarity
 
         # Add embeddings to the index
         embeddings = np.array([chunk.embedding for chunk in self.embedded_chunks]).astype('float32')
@@ -47,7 +47,7 @@ class Retriever:
 
         logger.info(f"FAISS index built successfully with {self.index.ntotal} vectors.")
 
-    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 5) -> List[Tuple[EmbeddedChunk, float]]:
+    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 10) -> List[Tuple[EmbeddedChunk, float]]:
         """
         Retrieve the most relevant document chunks for a given parsed query.
 

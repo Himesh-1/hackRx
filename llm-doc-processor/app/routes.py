@@ -9,6 +9,7 @@ from models.query_parser import QueryParser
 from models.retriever import Retriever
 from models.decision_engine import DecisionEngine
 import logging
+import time
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -23,9 +24,10 @@ class QueryRequest(BaseModel):
 class DecisionResponse(BaseModel):
     decision: str
     justification: str
-    payout_amount: float
-    confidence_score: float
-    referenced_clauses: list
+    amount: float
+    confidence: float
+    clauses: list
+    processing_time: float
 
 # --- Dependency Injection --- 
 def get_retriever(request: Request) -> Retriever:
@@ -48,6 +50,7 @@ def process_query(
     """
     Process a natural language query and return a decision.
     """
+    start_time = time.time()
     logger.info(f"Received query: {query_request.query}")
 
     # 1. Parse the query
@@ -61,9 +64,22 @@ def process_query(
         raise HTTPException(status_code=404, detail="Could not find any relevant information in the documents.")
 
     # 3. Make a decision
-    decision = decision_engine.make_decision(parsed_query, retrieved_chunks)
+    decision_result = decision_engine.make_decision(parsed_query, retrieved_chunks)
 
-    if "error" in decision:
-        raise HTTPException(status_code=500, detail=decision["error"])
+    if "error" in decision_result:
+        raise HTTPException(status_code=500, detail=decision_result["error"])
 
-    return decision
+    end_time = time.time()
+    processing_time = end_time - start_time
+
+    # Map backend fields to frontend fields
+    response_data = {
+        "decision": decision_result.get("decision"),
+        "justification": decision_result.get("justification"),
+        "amount": decision_result.get("payout_amount"),
+        "confidence": decision_result.get("confidence_score"),
+        "clauses": decision_result.get("referenced_clauses"),
+        "processing_time": processing_time
+    }
+
+    return response_data

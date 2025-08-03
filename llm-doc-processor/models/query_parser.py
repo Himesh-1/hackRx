@@ -1,6 +1,15 @@
 """
 Query Parser Module
-Parses natural language queries and extracts structured information
+Parses natural language queries and         # Age patterns - More flexible matching
+        self.age_patterns = [
+            r'(\d{1,3})\s*(?:year|yr|y)(?:ear)?s?\s*old',
+            r'(\d{1,3})\s*yo',
+            r'age\s*:?\s*(\d{1,3})',
+            r'(\d{1,3})\s*[MF]',  # Age followed by gender
+            r'(\d{1,3})M|(\d{1,3})F',  # Common medical notation
+            r'(?:^|\s+)(\d{1,3})(?:\s*(?:M|F|male|female))?(?:\s+|$)',  # Standalone number with optional gender
+            r'(?:^|\s+)(\d{1,2})(?:\s+|$)'  # Just the number if between 0-99
+        ]ts structured information
 for better document retrieval and decision making
 """
 
@@ -58,74 +67,87 @@ class QueryParser:
     def _setup_patterns(self):
         """Setup regex patterns and keyword mappings for entity extraction"""
         
-        # Age patterns
+        # Age patterns - More flexible matching
         self.age_patterns = [
             r'(\d{1,3})\s*(?:year|yr|y)(?:ear)?s?\s*old',
             r'(\d{1,3})\s*yo',
             r'age\s*:?\s*(\d{1,3})',
             r'(\d{1,3})\s*[MF]',  # Age followed by gender
             r'(\d{1,3})M|(\d{1,3})F',  # Common medical notation
+            r'(?:^|\s+)(\d{1,3})(?:\s*(?:M|F|male|female))?(?:\s+|$)',  # Standalone number with optional gender
+            r'(?:^|\s+)(\d{1,2})(?:\s+|$)'  # Just the number if between 0-99
         ]
         
-        # Gender patterns
+        # Gender patterns - More flexible
         self.gender_patterns = [
             r'\b(male|female|man|woman|boy|girl|M|F)\b',
             r'\b(\d+)\s*(M|F)\b',  # Age-gender combo
         ]
         
-        # Medical procedure patterns
+        # Medical procedure patterns - Expanded and more specific
         self.procedure_patterns = [
-            r'\b(surgery|operation|procedure|treatment)\b',
-            r'\b(knee|hip|heart|brain|liver|kidney|lung|spine|shoulder|ankle|wrist)\s*(surgery|operation|replacement|repair)',
-            r'\b(appendectomy|cholecystectomy|bypass|angioplasty|stent|biopsy|endoscopy|colonoscopy)\b',
-            r'\b(cataract|laser|arthroscopy|laparoscopy|minimally\s*invasive)\b',
+            r'\b(knee|hip|heart|cardiac|brain|liver|kidney|lung|spine|shoulder|ankle|wrist)\s*(surgery|operation|replacement|repair|transplant|procedure|treatment)',
+            r'\b(appendectomy|cholecystectomy|bypass|angioplasty|stent|biopsy|endoscopy|colonoscopy|dialysis|chemotherapy|radiotherapy|physiotherapy|rehabilitation)\b',
+            r'\b(cataract|laser|arthroscopy|laparoscopy|mastectomy|hysterectomy|tonsillectomy|dental|maternity|orthopedic|neurological|oncological)\s*(treatment|procedure|care|claim|surgery)',
+            r'\b(delivery|childbirth|pregnancy|caesarean)\b', # Maternity
+            r'\b(root\s*canal|filling|extraction|braces)\b', # Dental
         ]
         
-        # Location patterns (Indian cities focus)
+        # Location patterns (Indian cities focus) - Expanded list and more flexible
         self.location_patterns = [
             r'\b(Mumbai|Delhi|Bangalore|Bengaluru|Chennai|Kolkata|Hyderabad|Pune|Ahmedabad|Surat|Jaipur|Lucknow|Kanpur|Nagpur|Indore|Thane|Bhopal|Visakhapatnam|Pimpri|Patna|Vadodara|Ghaziabad|Ludhiana|Agra|Nashik|Faridabad|Meerut|Rajkot|Kalyan|Vasai|Varanasi|Srinagar|Aurangabad|Dhanbad|Amritsar|Navi Mumbai|Allahabad|Ranchi|Howrah|Coimbatore|Jabalpur|Gwalior|Vijayawada|Jodhpur|Madurai|Raipur|Kota|Guwahati|Chandigarh|Solapur|Hubli|Bareilly|Moradabad|Mysore|Gurgaon|Aligarh|Jalandhar|Tiruchirappalli|Bhubaneswar|Salem|Warangal|Guntur|Bhiwandi|Saharanpur|Gorakhpur|Bikaner|Amravati|Noida|Jamshedpur|Bhilai|Cuttack|Firozabad|Kochi|Dehradun|Durgapur|Pondicherry|Siliguri|Jammu|Sangli|Ulhasnagar|Jalgaon|Korba|Mangalore|Erode|Belgaum|Ambattur|Tirunelveli|Malegaon|Jamnagar|Nanded|Kollam|Akola|Gulbarga|Ajmer|Thrissur|Udaipur|Asansol|Loni|Jhansi|Nellore|Mathura|Imphal|Haridwar)\b',
-            r'\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',  # Generic location after "in"
+            r'\b(?:in|at|from)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',  # Generic location after "in", "at", "from"
         ]
         
-        # Policy duration patterns
+        # Policy duration patterns - More variations
         self.policy_duration_patterns = [
-            r'(\d+)\s*(?:month|mon|m)(?:old|s)?\s*(?:policy|insurance)',
-            r'(\d+)\s*(?:year|yr|y)(?:old|s)?\s*(?:policy|insurance)',
-            r'(?:policy|insurance)\s*(?:of|for|since)?\s*(\d+)\s*(?:month|year|mon|yr|m|y)s?',
-            r'(\d+)\s*(?:month|year|mon|yr|m|y)s?\s*(?:old|existing|current)\s*(?:policy|insurance)',
+            r'(\d+)\s*(?:month|mon|m)(?:s)?\s*(?:old|existing|current)?\s*(?:policy|insurance|plan)',
+            r'(\d+)\s*(?:year|yr|y)(?:s)?\s*(?:old|existing|current)?\s*(?:policy|insurance|plan)',
+            r'(?:policy|insurance|plan)\s*(?:of|for|since)?\s*(\d+)\s*(?:month|year|mon|yr|m|y)s?',
+            r'(\d+)\s*day(?:s)?\s*(?:old|existing|current)?\s*(?:policy|insurance|plan)',
         ]
         
-        # Insurance-related keywords
+        # Insurance-related keywords - Expanded
         self.insurance_keywords = [
             'claim', 'coverage', 'policy', 'premium', 'deductible', 'copay',
             'covered', 'excluded', 'benefit', 'reimbursement', 'approval',
-            'pre-existing', 'waiting period', 'cashless', 'network hospital'
+            'pre-existing', 'waiting period', 'cashless', 'network hospital', 'sum assured',
+            'renewal', 'endorsement', 'nominee', 'insurer', 'insured', 'hospitalization',
+            'OPD', 'IPD', 'critical illness', 'accident', 'disease', 'illness', 'diagnosis'
         ]
         
-        # Medical keywords
+        # Medical keywords - Expanded
         self.medical_keywords = [
             'diagnosis', 'treatment', 'medication', 'prescription', 'doctor',
             'hospital', 'clinic', 'emergency', 'consultation', 'therapy',
-            'rehabilitation', 'follow-up', 'complications', 'recovery'
+            'rehabilitation', 'follow-up', 'complications', 'recovery', 'ICU', 'room rent',
+            'patient', 'medical report', 'discharge summary', 'ailment', 'symptoms', 'health'
         ]
         
-        # Intent patterns
+        # Intent patterns - More robust
         self.intent_patterns = {
             'claim_inquiry': [
-                r'\b(claim|coverage|covered|eligible|approve|reimburse)\b',
-                r'\b(can\s+I|will\s+you|is\s+this|am\s+I)\b.*\b(covered|eligible|approved)\b'
+                r'\b(claim|coverage|covered|eligible|approve|reimburse|settlement|pay)\b',
+                r'\b(can\s+I|will\s+you|is\s+this|am\s+I)\b.*\b(covered|eligible|approved|reimbursed)\b',
+                r'\b(how\s+to\s+claim|process\s+claim|claim\s+procedure)\b'
             ],
             'policy_check': [
-                r'\b(policy|insurance|plan)\b.*\b(details|information|status)\b',
-                r'\b(what|which|how)\b.*\b(policy|coverage|benefit)\b'
+                r'\b(policy|insurance|plan)\b.*\b(details|information|status|terms|conditions|document)\b',
+                r'\b(what|which|how)\b.*\b(policy|coverage|benefit|plan)\b',
+                r'\b(check\s+my\s+policy|policy\s+status)\b'
             ],
             'cost_inquiry': [
-                r'\b(cost|price|amount|fee|charge|bill)\b',
-                r'\b(how\s+much|what.*cost|price.*for)\b'
+                r'\b(cost|price|amount|fee|charge|bill|expense)\b',
+                r'\b(how\s+much|what.*cost|price.*for|estimate)\b'
             ],
             'eligibility_check': [
-                r'\b(eligible|qualify|entitled|allowed)\b',
-                r'\b(can\s+I|am\s+I\s+able|is\s+it\s+possible)\b'
+                r'\b(eligible|qualify|entitled|allowed|can\s+get)\b',
+                r'\b(can\s+I|am\s+I\s+able|is\s+it\s+possible)\b',
+                r'\b(eligibility\s+criteria|who\s+is\s+eligible)\b'
+            ],
+            'document_request': [
+                r'\b(need|get|provide|send)\s+me\s+(?:the)?\s*(?:policy)?\s*(document|copy|paperwork|form)\b',
+                r'\b(where\s+can\s+I\s+find|access\s+my)\s+policy\b'
             ]
         }
     
@@ -144,24 +166,46 @@ class QueryParser:
         # Clean and normalize query
         cleaned_query = self._clean_query(query)
         
-        # Extract entities
-        entities = self._extract_entities(cleaned_query)
+        # Try multiple variations of the query for better entity extraction
+        variations = [
+            cleaned_query,
+            # Add common variations
+            cleaned_query.replace(",", " "),  # Handle comma-separated format
+            cleaned_query.replace("-", " "),  # Handle hyphenated format
+            # Add expanded forms
+            cleaned_query.replace("m", " male ").replace("f", " female "),
+            cleaned_query.replace("yr", " year ").replace("y", " year "),
+            cleaned_query.replace("mon", " month ").replace("m", " month ")
+        ]
         
-        # Determine intent
-        intent = self._determine_intent(cleaned_query)
+        # Extract entities from all variations
+        all_entities = {}
+        for variation in variations:
+            entities = self._extract_entities(variation)
+            # Merge new entities
+            for key, value in entities.items():
+                if key not in all_entities or not all_entities[key]:
+                    all_entities[key] = value
         
-        # Extract keywords
-        keywords = self._extract_keywords(cleaned_query)
+        # Determine intent - check multiple variations for better accuracy
+        intents = [self._determine_intent(var) for var in variations]
+        intent = max(set(intents), key=intents.count)  # Use most common intent
         
-        # Create enhanced query
-        enhanced_query = self._enhance_query(cleaned_query, entities, keywords)
+        # Extract keywords from all variations
+        all_keywords = set()
+        for variation in variations:
+            all_keywords.update(self._extract_keywords(variation))
+        keywords = list(all_keywords)
+        
+        # Create enhanced query using all extracted information
+        enhanced_query = self._enhance_query(cleaned_query, all_entities, keywords)
         
         # Calculate confidence score
-        confidence = self._calculate_confidence(entities, intent, keywords)
+        confidence = self._calculate_confidence(all_entities, intent, keywords)
         
         parsed_query = ParsedQuery(
             original_query=query,
-            entities=entities,
+            entities=all_entities,
             intent=intent,
             keywords=keywords,
             enhanced_query=enhanced_query,
@@ -169,7 +213,7 @@ class QueryParser:
             metadata={
                 'processing_timestamp': datetime.now().isoformat(),
                 'query_length': len(query),
-                'entities_found': len(entities),
+                'entities_found': len(all_entities),
                 'keywords_found': len(keywords)
             }
         )
@@ -387,74 +431,108 @@ class QueryParser:
             return 'general_inquiry'
     
     def _extract_keywords(self, query: str) -> List[str]:
-        """Extract relevant keywords from the query"""
-        keywords = []
-        
+        """Extract relevant keywords from the query using a more robust method."""
+        keywords = set()
+
         # Add insurance-related keywords
         for keyword in self.insurance_keywords:
             if re.search(r'\b' + re.escape(keyword) + r'\b', query, re.IGNORECASE):
-                keywords.append(keyword)
-        
+                keywords.add(keyword)
+
         # Add medical keywords
         for keyword in self.medical_keywords:
             if re.search(r'\b' + re.escape(keyword) + r'\b', query, re.IGNORECASE):
-                keywords.append(keyword)
-        
-        # Extract important nouns using SpaCy if available
+                keywords.add(keyword)
+
+        # Use SpaCy for more intelligent keyword extraction
         if self.nlp:
             try:
                 doc = self.nlp(query)
                 for token in doc:
-                    if (token.pos_ in ['NOUN', 'PROPN'] and 
-                        len(token.text) > 3 and 
-                        token.text.lower() not in keywords):
-                        keywords.append(token.text.lower())
+                    # Extract nouns, proper nouns, and adjectives as keywords
+                    if token.pos_ in ['NOUN', 'PROPN', 'ADJ'] and not token.is_stop and len(token.text) > 2:
+                        keywords.add(token.lemma_.lower())
             except Exception as e:
                 logger.warning(f"SpaCy keyword extraction failed: {str(e)}")
         
-        return list(set(keywords))  # Remove duplicates
-    
+        return list(keywords)
+
     def _enhance_query(self, query: str, entities: Dict[str, Any], keywords: List[str]) -> str:
-        """Create an enhanced query for better retrieval"""
-        enhanced_parts = [query]
-        
-        # Add entity-based enhancements
-        if 'age' in entities and 'gender' in entities:
-            enhanced_parts.append(f"{entities['age']} year old {entities['gender']}")
-        
+        """Create a structured and enhanced query for better retrieval."""
+        # Start with the core intent and procedure
+        intent = self._determine_intent(query)
+        enhanced_parts = [intent]
+
         if 'procedures' in entities:
             enhanced_parts.extend(entities['procedures'])
         
-        if 'locations' in entities:
-            enhanced_parts.extend(entities['locations'])
-        
-        if 'policy_duration' in entities:
-            duration = entities['policy_duration']
-            enhanced_parts.append(f"{duration['value']} {duration['unit']} policy")
-        
-        # Add relevant keywords
-        enhanced_parts.extend(keywords[:5])  # Top 5 keywords
-        
-        return ' '.join(enhanced_parts)
+        # Add other entities as key-value pairs for clarity
+        for entity, value in entities.items():
+            if entity != 'procedures':
+                if isinstance(value, dict):
+                    enhanced_parts.append(f"{entity}: {value.get('value')} {value.get('unit', '')}".strip())
+                elif isinstance(value, list):
+                    # Ensure list items are properly handled, especially for spacy entities
+                    formatted_list = []
+                    for item in value:
+                        if isinstance(item, dict) and 'text' in item:
+                            formatted_list.append(item['text'])
+                        else:
+                            formatted_list.append(str(item))
+                    enhanced_parts.append(f"{entity}: {', '.join(formatted_list)}")
+                else:
+                    enhanced_parts.append(f"{entity}: {value}")
+
+        # Add a few highly relevant keywords
+        enhanced_parts.extend(keywords[:5]) # Increased to top 5 keywords
+
+        return " | ".join(enhanced_parts)
     
     def _calculate_confidence(self, entities: Dict[str, Any], intent: str, keywords: List[str]) -> float:
         """Calculate confidence score for the parsed query"""
         confidence = 0.0
         
-        # Base confidence
-        confidence += 0.3
+        # Base confidence - higher base for queries with key information
+        has_key_info = any([entities.get('age'), entities.get('procedures'), entities.get('policy_duration'), entities.get('amounts')])
+        confidence += 0.3 if has_key_info else 0.1
         
-        # Entity extraction confidence
+        # Entity extraction confidence - weighted by importance
         if entities:
-            confidence += min(0.4, len(entities) * 0.1)
+            entity_weights = {
+                'age': 0.15,
+                'gender': 0.05,
+                'procedures': 0.2,
+                'locations': 0.1,
+                'policy_duration': 0.15,
+                'amounts': 0.1,
+                'spacy_person': 0.05,
+                'spacy_org': 0.05,
+                'spacy_gpe': 0.05,
+                'spacy_date': 0.05,
+                'spacy_money': 0.05,
+                'spacy_quantity': 0.05
+            }
+            
+            for entity_type, weight in entity_weights.items():
+                if entities.get(entity_type):
+                    confidence += weight
         
-        # Intent detection confidence
-        if intent != 'general_inquiry':
-            confidence += 0.2
+        # Intent detection confidence - higher weight for specific intents
+        intent_weights = {
+            'claim_inquiry': 0.2,
+            'policy_check': 0.15,
+            'cost_inquiry': 0.15,
+            'eligibility_check': 0.15,
+            'document_request': 0.1,
+            'general_inquiry': 0.05
+        }
+        confidence += intent_weights.get(intent, 0.05)
         
-        # Keyword relevance confidence
+        # Keyword relevance confidence - weighted by relevance
         if keywords:
-            confidence += min(0.1, len(keywords) * 0.02)
+            relevant_keywords = ['surgery', 'treatment', 'policy', 'insurance', 'hospital', 'claim', 'covered', 'eligible', 'cost', 'amount']
+            relevant_count = sum(1 for k in keywords if any(r in k.lower() for r in relevant_keywords))
+            confidence += min(0.2, relevant_count * 0.02) # Max 0.2 for keywords
         
         return min(1.0, confidence)
     

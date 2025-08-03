@@ -5,6 +5,7 @@ Handles loading and preprocessing of various document formats (PDF, DOCX, TXT)
 
 import os
 import logging
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import fitz  # PyMuPDF
@@ -92,7 +93,7 @@ class DocumentLoader:
         return documents
     
     def _load_pdf(self, file_path: Path) -> Document:
-        """Extract text from PDF file"""
+        """Extract text from PDF file, with preprocessing to remove headers/footers."""
         content = ""
         page_count = 0
         
@@ -101,15 +102,29 @@ class DocumentLoader:
             
             for page_num in range(page_count):
                 page = pdf_doc[page_num]
-                content += page.get_text() + "\n"
+                full_text = page.get_text("text")
+                
+                # Simple heuristic to remove headers and footers
+                # Assumes header is in top 10% and footer is in bottom 10% of the page
+                lines = full_text.split('\n')
+                meaningful_lines = lines[int(len(lines)*0.1) : int(len(lines)*0.9)]
+                content += "\n".join(meaningful_lines) + "\n"
         
         return Document(
-            content=content.strip(),
+            content=self._post_process_text(content),
             filename=file_path.name,
             file_type="pdf",
             page_count=page_count,
             metadata={"pages": page_count}
         )
+
+    def _post_process_text(self, text: str) -> str:
+        """Clean up extracted text."""
+        # Remove multiple consecutive newlines
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        # Remove page numbers and other small, isolated text fragments
+        text = re.sub(r'\n\s*\d+\s*\n', '\n', text)
+        return text.strip()
     
     def _load_docx(self, file_path: Path) -> Document:
         """Extract text from DOCX file"""

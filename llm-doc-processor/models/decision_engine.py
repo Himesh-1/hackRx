@@ -6,11 +6,13 @@ Uses a Large Language Model (LLM) to make decisions based on retrieved context.
 import os
 import json
 import logging
+import re
 from typing import List, Dict, Any, Tuple
 import google.generativeai as genai
 import numpy as np
 from .query_parser import ParsedQuery
 from .embedder import EmbeddedChunk
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -47,40 +49,42 @@ class DecisionEngine:
             model = genai.GenerativeModel(self.model_name)
             response = model.generate_content(prompt)
             logger.info(f"Gemini raw response: {response.text!r}")
+
             if not response.text or not response.text.strip():
-                return {
-                    "error": "Gemini API returned an empty response.",
-                    "details": "No content received from LLM."
-                }
-            try:
-                cleaned = response.text.strip()
-                # Remove markdown code block formatting if present
-                if cleaned.startswith('```'):
-                    cleaned = cleaned.lstrip('`')
-                    if cleaned.lower().startswith('json'):
-                        cleaned = cleaned[4:].lstrip('\n')
-                    cleaned = cleaned.rstrip('`').strip()
-                logger.info(f"Cleaned Gemini response for JSON parsing: {cleaned}")
-                decision = json.loads(cleaned)
-                logger.info(f"Decision made successfully: {decision.get('decision')}")
-                return decision
-            except json.JSONDecodeError as jde:
-                logger.error(f"JSON decode error: {jde}")
-                return {
-                    "error": "Gemini API did not return valid JSON.",
-                    "details": response.text
-                }
+                return {"error": "LLM returned an empty response."}
+
+            # Extract the JSON part from the response
+            json_match = re.search(r'```json\n({.*?})\n```', response.text, re.DOTALL)
+            if not json_match:
+                # Fallback for responses that might not have the markdown
+                json_match = re.search(r'({.*?})', response.text, re.DOTALL)
+
+            if json_match:
+                json_str = json_match.group(1)
+                try:
+                    decision = json.loads(json_str)
+                    logger.info(f"Decision made successfully: {decision.get('decision')}")
+                    return decision
+                except json.JSONDecodeError as jde:
+                    logger.error(f"JSON decode error in extracted string: {jde}")
+                    return {"error": "LLM response did not contain valid JSON.", "details": json_str}
+            else:
+                logger.error("Could not find a JSON block in the LLM response.")
+                return {"error": "Could not parse LLM response.", "details": response.text}
+
         except Exception as e:
             logger.error(f"Error during Gemini API call: {e}", exc_info=True)
-            return {
-                "error": "Failed to get a response from the language model.",
-                "details": str(e)
-            }
+            return {"error": "Failed to get a response from the language model.", "details": str(e)}
 
     def _construct_prompt(self, parsed_query: ParsedQuery, retrieved_chunks: List[Tuple[EmbeddedChunk, float]]) -> str:
-        context = "\n".join([f"--- Chunk from {chunk.chunk.source_document} ---\n{chunk.chunk.content}" for chunk, score in retrieved_chunks])
-        prompt = f"""
-        Please analyze the following insurance query and the provided document excerpts to make a final decision.
+        context = "\n".join([f"--- Chunk from {chunk.chunk.source_document} (Score: {score:.2f}) ---\n{chunk.chunk.content}" for chunk, score in retrieved_chunks])
+        
+        prompt = f"""**System Role:**
+        You are an expert AI insurance claim adjudicator. Your task is to analyze insurance queries and make a definitive, evidence-based decision based *only* on the provided policy document excerpts.
+
+        **Context:**
+        - Today's Date: {datetime.now().strftime('%Y-%m-%d')}
+        - Query Confidence: {parsed_query.confidence:.2f}
 
         **Original Query:**
         {parsed_query.original_query}
@@ -88,34 +92,39 @@ class DecisionEngine:
         **Parsed Information:**
         - Intent: {parsed_query.intent}
         - Entities: {json.dumps(parsed_query.entities, indent=2)}
+        - Enhanced Query for Retrieval: {parsed_query.enhanced_query}
 
-        **Relevant Document Excerpts:**
+        **Relevant Policy Document Excerpts:**
         {context}
 
         **Your Task:**
-        Based on the query and the document excerpts, provide a JSON response with the following structure:
+        1.  **Chain of Thought:** First, reason through the query step-by-step. Explicitly state your reasoning process. Consider the query, the parsed entities, and each provided document chunk. Analyze if the chunks are relevant and sufficient. Identify the key clauses that support or deny the claim.
+        2.  **Final Decision:** Based on your reasoning, provide a final JSON response with the specified structure. The decision must be directly supported by the text in the excerpts.
+
+        **JSON Output Structure:**
+        ```json
         {{
-            "decision": "<Approve/Reject/Insufficient Information>",
-            "justification": "<A clear and concise explanation for your decision, referencing specific document clauses if possible.>",
-            "payout_amount": <The approved payout amount, or 0 if rejected>,
-            "confidence_score": <A float between 0.0 and 1.0 indicating your confidence in the decision>,
+            "decision": "<Approved/Rejected/Insufficient Information>",
+            "justification": "<A clear, concise, and evidence-based explanation for your decision, directly referencing specific document clauses and connecting them to the user's query.>",
+            "payout_amount": <The approved payout amount as a float, or 0.0 if rejected or info is insufficient>,
+            "confidence_score": <A float between 0.0 and 1.0 indicating your confidence in the decision based *only* on the provided information>,
             "referenced_clauses": [
                 {{
                     "source_document": "<The name of the source document>",
-                    "clause_text": "<The specific text of the referenced clause>"
+                    "clause_text": "<The exact, verbatim text of the referenced clause>"
                 }}
             ]
         }}
+        ```
 
-        **Instructions:**
-        - If the information is sufficient to approve the claim, set "decision" to "Approve".
-        - If the information clearly indicates the claim should be rejected, set "decision" to "Reject".
-        - If the provided excerpts are not sufficient to make a clear decision, set "decision" to "Insufficient Information".
-        - The justification should be detailed and directly supported by the provided text.
-        - The payout_amount should be based on the claim details and policy limits, if available.
-        - Reference the specific clauses from the documents that support your decision.
+        **Instructions & Examples:**
+        -   **Decision:** Must be one of `Approved`, `Rejected`, or `Insufficient Information`.
+        -   **Justification:** Do not invent information. If a detail (e.g., age) is missing from the query but required by the policy, state it. Example: "The claim is rejected because the policy requires a minimum of 24 months of waiting for knee surgery, but the policy is only 3 months old as stated in Clause 12.1."
+        -   **Payout Amount:** Only specify if the policy provides a clear amount for the procedure. Otherwise, default to 0.0.
+        -   **Confidence Score:** High confidence (>0.9) for clear approve/reject cases. Medium (0.6-0.9) if there's some ambiguity. Low (<0.6) for insufficient information.
+        -   **Insufficient Information:** Use this if a critical piece of information is missing from both the query and the documents to make a call. Explain what is missing in the justification.
 
-        Provide only the JSON response. Respond ONLY with valid JSON. Do not include any extra text or explanation.
+        Begin your response with your chain of thought, followed by the final JSON object.
         """
         return prompt
 
