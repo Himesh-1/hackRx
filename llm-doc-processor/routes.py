@@ -69,6 +69,8 @@ class HackRxRequest(BaseModel):
 class HackRxResponse(BaseModel):
     answers: List[str]
 
+from reranker import ReRanker
+
 # --- Initialize global components ---
 # These components are initialized once when the application starts
 # and reused across all requests to improve performance and reduce overhead.
@@ -77,6 +79,7 @@ chunker = DocumentChunker()
 embedder = DocumentEmbedder()
 decision_engine = DecisionEngine()
 query_parser = QueryParser()
+reranker = ReRanker()
 
 # --- API Endpoint ---
 import asyncio
@@ -121,17 +124,26 @@ async def process_query(
     parsed_queries = [query_parser.parse_query(q) for q in all_questions]
     query_embeddings = embedder.embed_queries([pq.enhanced_query for pq in parsed_queries])
 
-    # B. Concurrently retrieve chunks for all questions in separate threads
+    # B. Concurrently retrieve a larger set of chunks for re-ranking
+    initial_top_k = 20
     retrieval_tasks = [
-        asyncio.to_thread(retriever.retrieve, pq, top_k, emb)
+        asyncio.to_thread(retriever.retrieve, pq, initial_top_k, emb)
         for pq, emb in zip(parsed_queries, query_embeddings)
     ]
-    retrieved_contexts = await asyncio.gather(*retrieval_tasks)
+    initial_retrievals = await asyncio.gather(*retrieval_tasks)
 
-    # C. Structure data for the decision engine
+    # C. Concurrently re-rank the results for each question
+    rerank_top_n = 7
+    rerank_tasks = [
+        asyncio.to_thread(reranker.rerank, pq, initial_ctx, rerank_top_n)
+        for pq, initial_ctx in zip(parsed_queries, initial_retrievals)
+    ]
+    reranked_contexts = await asyncio.gather(*rerank_tasks)
+
+    # D. Structure data for the decision engine
     processed_questions = [
         {"question": pq.original_query, "context": context}
-        for pq, context in zip(parsed_queries, retrieved_contexts)
+        for pq, context in zip(parsed_queries, reranked_contexts)
     ]
 
     # 5. Make a single, batched decision with smart context stuffing

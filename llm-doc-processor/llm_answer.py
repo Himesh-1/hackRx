@@ -75,22 +75,25 @@ class DecisionEngine:
             return {"error": "Failed to get a response from the language model.", "details": str(e)}
 
     def _construct_batch_prompt(self, processed_questions: List[Dict[str, Any]]) -> str:
-        """Constructs a single, detailed prompt for a batch of questions with token-aware context stuffing."""
-        base_prompt_template = """You are an AI Insurance Policy Expert. Your primary role is to provide clear, comprehensive, and accurate answers to the following list of questions based *only* on the provided documents.
+        """Constructs a single, detailed prompt for a batch of questions with token-aware context stuffing and Chain-of-Thought reasoning."""
+        base_prompt_template = """You are an AI Insurance Policy Expert. Your task is to provide clear and accurate answers to a list of questions based *only* on the provided document excerpts.
 
-Your Task:
+**Your Reasoning Process (Chain-of-Thought):**
 
-1.  **Analyze Each Question and its Context:** For each question, carefully review the provided policy clauses to form a holistic understanding.
-2.  **Generate Concise Answers:** For each question, generate a direct and concise answer. Keep the answer to a similar length as this example: 'A hospital is defined as an institution with at least 10 inpatient beds, qualified nursing staff, and a fully equipped operation theatre.'
-3.  **Strict JSON Output:** Your final output must be a single, valid JSON object. This object must contain a single key, "answers", which is a list of strings. Each string in the list should be the answer to the corresponding question in the order they were presented.
+1.  **Analyze the Question:** For each question, understand its core intent.
+2.  **Extract Key Sentences:** From the "Relevant Policy Clauses" provided for that question, identify and extract the exact sentences that directly answer the question.
+3.  **Synthesize the Final Answer:** Based *only* on the key sentences you extracted, construct a final, concise answer. Keep the answer to a similar length as this example: 'A hospital is defined as an institution with at least 10 inpatient beds, qualified nursing staff, and a fully equipped operation theatre.'
+
+**Final Output Format:**
+
+Your final output *must* be a single, valid JSON object. This object must contain a single key, "answers", which is a list of strings. Each string in the list should be the synthesized answer to the corresponding question, in the order they were presented.
 
 **Example JSON Output:**
 ```json
 {{
   "answers": [
-    "Answer to the first question.",
-    "Answer to the second question.",
-    "Answer to the third question."
+    "Answer to the first question based on extracted sentences.",
+    "Answer to the second question based on extracted sentences."
   ]
 }}
 ```
@@ -101,7 +104,7 @@ Your Task:
 
 ---
 
-Now, provide the answers in the specified JSON format.
+Now, follow the reasoning process and provide the final answers in the specified JSON format.
 """
         
         questions_with_context = []
@@ -115,7 +118,7 @@ Now, provide the answers in the specified JSON format.
             if i > 0:
                 current_tokens += separator_tokens
 
-            question_str = f"Question: {item['question']}\n\nRelevant Policy Clauses:\n"
+            question_str = f"**Question {i+1}: {item['question']}**\n\nRelevant Policy Clauses:\n"
             question_tokens = _estimate_tokens(question_str)
 
             # Check if we can even fit the next question's header before proceeding.
