@@ -1,4 +1,3 @@
-
 """
 Decision Engine Module
 This module uses a Large Language Model (LLM) to make decisions based on
@@ -20,6 +19,10 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def _estimate_tokens(text: str) -> int:
+    """A more standard heuristic to estimate token count (chars / 4)."""
+    return int(len(text) / 4)
+
 class DecisionEngine:
     """
     The DecisionEngine uses a generative AI model to make a final decision based
@@ -28,153 +31,138 @@ class DecisionEngine:
     and formats the output in a structured JSON format.
     """
 
-    def __init__(self, model_name: str = "gemini-1.5-flash", temperature: float = 0.0):
+    def __init__(self, model_name: str = "gemini-1.5-flash", temperature: float = 0.0, max_prompt_tokens: int = 128000):
         """
         Initializes the Decision Engine.
 
         Args:
             model_name: The name of the generative AI model to use.
-            temperature: The creativity of the model's responses. A lower value
-                         is better for fact-based decisions.
+            temperature: The creativity of the model's responses.
+            max_prompt_tokens: The maximum number of tokens to allow in the prompt.
         """
         self.model_name = model_name
         self.temperature = temperature
+        self.max_prompt_tokens = max_prompt_tokens
         self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set.")
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(self.model_name)
 
-    def make_decision(self, parsed_query: ParsedQuery, retrieved_chunks: List[Tuple[EmbeddedChunk, float]]) -> Dict[str, Any]:
+    def make_decision_batch(self, processed_questions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Makes a decision by sending a structured prompt to the LLM.
-
-        Args:
-            parsed_query (ParsedQuery): The parsed user query.
-            retrieved_chunks (List[Tuple[EmbeddedChunk, float]]): A list of relevant document chunks and their scores.
-
-        Returns:
-            Dict[str, Any]: A dictionary containing the decision, justification, and other metadata.
+        Makes a single, batched decision for a list of questions with smart context stuffing.
         """
-        logger.info(f"Making decision for query: '{parsed_query.original_query}'")
-        prompt = self._construct_prompt(parsed_query, retrieved_chunks)
-        logger.info(f"LLM input prompt: {prompt!r}")
+        logger.info(f"Making batched decision for {len(processed_questions)} questions.")
+        prompt = self._construct_batch_prompt(processed_questions)
+        
+        if not prompt:
+            return {"error": "Failed to construct a valid prompt from the provided context."}
+
+        final_token_estimate = _estimate_tokens(prompt)
+        logger.info(f"Final prompt token estimate: {final_token_estimate}")
+
+        if final_token_estimate > self.max_prompt_tokens:
+            logger.error(f"FATAL: Prompt size ({final_token_estimate}) exceeds max limit ({self.max_prompt_tokens}). Aborting API call.")
+            return {"error": "Internal error: Prompt construction failed token validation."}
 
         try:
             response = self.model.generate_content(prompt)
             logger.info(f"LLM raw response: {response.text!r}")
-
-            return self._parse_llm_response(response.text)
-
+            return self._parse_llm_batch_response(response.text)
         except Exception as e:
             logger.error(f"Error during LLM API call: {e}", exc_info=True)
             return {"error": "Failed to get a response from the language model.", "details": str(e)}
 
-    def _construct_prompt(self, parsed_query: ParsedQuery, retrieved_chunks: List[Tuple[EmbeddedChunk, float]]) -> str:
-        """Constructs a detailed, structured prompt for the LLM."""
-        context = "\n".join([
-            f"--- Chunk from {chunk.chunk.source_document} (Score: {score:.2f}) ---\n{chunk.chunk.content}"
-            for chunk, score in retrieved_chunks
-        ])
-        
-        return f"""You are an AI Insurance Policy Expert. Your primary role is to provide clear, comprehensive, and accurate information about insurance policies based on the provided documents.
-
----
-
-User Query:
-{parsed_query.original_query}
-
-Rewritten Query for better understanding:
-{parsed_query.enhanced_query}
-
----
-
-Relevant Policy Clauses (retrieved using semantic similarity):
-{context}
-
----
+    def _construct_batch_prompt(self, processed_questions: List[Dict[str, Any]]) -> str:
+        """Constructs a single, detailed prompt for a batch of questions with token-aware context stuffing."""
+        base_prompt_template = """You are an AI Insurance Policy Expert. Your primary role is to provide clear, comprehensive, and accurate answers to the following list of questions based *only* on the provided documents.
 
 Your Task:
 
-1.  **Analyze the User's Query:** Understand the user's intent, whether it's a specific claim scenario or a general question about policy coverage.
+1.  **Analyze Each Question and its Context:** For each question, carefully review the provided policy clauses to form a holistic understanding.
+2.  **Generate Concise Answers:** For each question, generate a direct and concise answer. Keep the answer to a similar length as this example: 'A hospital is defined as an institution with at least 10 inpatient beds, qualified nursing staff, and a fully equipped operation theatre.'
+3.  **Strict JSON Output:** Your final output must be a single, valid JSON object. This object must contain a single key, "answers", which is a list of strings. Each string in the list should be the answer to the corresponding question in the order they were presented.
 
-2.  **Synthesize Information:** Carefully review all the provided policy clauses. Synthesize the information to form a holistic understanding of the relevant terms, conditions, exclusions, and benefits.
-
-3.  **Construct a Comprehensive Answer:** Based on your analysis, generate a detailed answer that directly addresses the user's query.
-
-    *   **For specific claim scenarios:**
-        *   Clearly state whether the claim is likely to be "Approved," "Rejected," or if "More Information is Needed."
-        *   Provide a thorough justification for your decision, citing the specific clauses (including clause numbers or headings) that support your conclusion.
-        *   If applicable, provide an estimated payout or benefit amount, explaining how you arrived at that figure based on the policy terms.
-
-    *   **For general queries about the policy:**
-        *   Provide a detailed explanation of the relevant policy sections.
-        *   Clarify any complex terms or conditions.
-        *   Use examples to illustrate how the policy works in practice.
-
-4.  **Provide a Confidence Score:** Rate your confidence in the answer on a scale of 1 to 5, where 5 is very confident and 1 is not confident.
+**Example JSON Output:**
+```json
+{{
+  "answers": [
+    "Answer to the first question.",
+    "Answer to the second question.",
+    "Answer to the third question."
+  ]
+}}
+```
 
 ---
 
-Rules:
+{questions_block}
 
-*   **Clarity and Precision:** Your answer must be easy to understand, precise, and unambiguous.
-*   **Evidence-Based:** Base your entire answer *only* on the provided policy clauses. Do not make assumptions or use external knowledge.
-*   **Cite Your Sources:** Always reference the specific clause numbers or headings that support your statements.
-*   **JSON Output:** Your final output must be a valid JSON object with the following structure:
+---
 
-```json
-{{
-  "summary": "A concise, one-sentence summary of the answer.",
-  "answer": "A detailed and comprehensive answer to the user's query, following the guidelines above.",
-  "confidence_score": <1-5>,
-  "decision": "Approved" or "Rejected" or "More Information Needed" or "Not Applicable",
-  "justification": "A detailed justification for the decision, citing relevant clauses. Null if not applicable.",
-  "amount": <number>
-}}
-```
+Now, provide the answers in the specified JSON format.
 """
+        
+        questions_with_context = []
+        # Account for the tokens in the template, minus the placeholder itself.
+        current_tokens = _estimate_tokens(base_prompt_template.replace("{questions_block}", ""))
+        separator = "\n\n---\n\n"
+        separator_tokens = _estimate_tokens(separator)
 
-    def _parse_llm_response(self, response_text: str) -> Dict[str, Any]:
-        """Parses the LLM's response to extract the structured JSON decision."""
-        # Find the JSON block within the markdown
-        json_match = re.search(r'```json\n({.*?})\n```', response_text, re.DOTALL)
-        if not json_match:
-            # Fallback for responses that might not have the markdown
-            json_match = re.search(r'({.*?})', response_text, re.DOTALL)
+        for i, item in enumerate(processed_questions):
+            # Account for the separator tokens that will be added between question blocks.
+            if i > 0:
+                current_tokens += separator_tokens
 
-        if json_match:
-            json_str = json_match.group(1)
-            try:
+            question_str = f"Question: {item['question']}\n\nRelevant Policy Clauses:\n"
+            question_tokens = _estimate_tokens(question_str)
+
+            # Check if we can even fit the next question's header before proceeding.
+            if current_tokens + question_tokens > self.max_prompt_tokens:
+                logger.warning(f"Token limit reached. Cannot add question: {item['question']}")
+                break
+
+            current_tokens += question_tokens
+            context_for_question = []
+
+            for chunk, score in item['context']:
+                chunk_str = f"--- Chunk from {chunk.chunk.source_document} (Score: {score:.2f}) ---\n{chunk.chunk.content}\n"
+                chunk_tokens = _estimate_tokens(chunk_str)
+                if current_tokens + chunk_tokens <= self.max_prompt_tokens:
+                    context_for_question.append(chunk_str)
+                    current_tokens += chunk_tokens
+                else:
+                    logger.info("Stopping context stuffing for this question to stay within token limit.")
+                    break
+            
+            questions_with_context.append(question_str + "".join(context_for_question))
+
+        if not questions_with_context:
+            logger.error("Could not construct any questions within the token limit.")
+            return None # Return None to indicate prompt construction failure
+
+        all_questions_block = separator.join(questions_with_context)
+        return base_prompt_template.format(questions_block=all_questions_block)
+
+    def _parse_llm_batch_response(self, response_text: str) -> Dict[str, Any]:
+        """Parses the LLM's response to extract the structured JSON object with a list of answers."""
+        try:
+            # Find the JSON block within the markdown
+            json_match = re.search(r'```json\n({.*?})\n```', response_text, re.DOTALL)
+            if not json_match:
+                json_match = re.search(r'({.*?})', response_text, re.DOTALL)
+
+            if json_match:
+                json_str = json_match.group(1).strip() # Clean the extracted JSON string
                 decision = json.loads(json_str)
-                logger.info(f"Successfully parsed decision: {decision.get('decision')}")
-                return decision
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to decode JSON from LLM response: {e}")
-                return {"error": "LLM response did not contain valid JSON.", "details": json_str}
-        else:
-            logger.error("Could not find a JSON block in the LLM response.")
+                if isinstance(decision.get('answers'), list):
+                    logger.info(f"Successfully parsed {len(decision['answers'])} answers from batched response.")
+                    return decision
+                else:
+                    raise json.JSONDecodeError("'answers' key is not a list.", json_str, 0)
+            else:
+                raise ValueError("Could not find a JSON block in the LLM response.")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to parse valid JSON from LLM batch response: {e}")
             return {"error": "Could not parse LLM response.", "details": response_text}
-
-# Example usage for testing purposes
-if __name__ == '__main__':
-    # This requires a GEMINI_API_KEY to be set in the environment.
-    if not os.getenv("GEMINI_API_KEY"):
-        print("Skipping DecisionEngine test: GEMINI_API_KEY not set.")
-    else:
-        decision_engine = DecisionEngine()
-        mock_query = ParsedQuery(
-            original_query="Is my knee surgery covered? My policy is 3 months old.",
-            enhanced_query="knee surgery coverage policy claim 3 month old",
-            entities={'procedure': 'knee surgery', 'policy_duration': {'value': 3, 'unit': 'months'}},
-            intent='claim_inquiry',
-            keywords=['knee', 'surgery', 'coverage', 'policy'],
-            confidence=0.95
-        )
-        mock_chunks = [
-            (EmbeddedChunk(chunk=None, embedding=None, embedding_model='', embedding_dim=0), 0.95),
-            (EmbeddedChunk(chunk=None, embedding=None, embedding_model='', embedding_dim=0), 0.88)
-        ]
-        decision_result = decision_engine.make_decision(mock_query, mock_chunks)
-        print("\n--- Decision Engine Test Result ---")
-        print(json.dumps(decision_result, indent=2))

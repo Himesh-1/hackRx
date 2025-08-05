@@ -119,75 +119,37 @@ class DocumentEmbedder:
     def embed_chunks(self, chunks: List[Chunk]) -> List[EmbeddedChunk]:
         """
         Creates embeddings for a list of text chunks.
-        It first checks for cached embeddings and processes new chunks in batches.
-
-        Args:
-            chunks (List[Chunk]): A list of Chunk objects to be embedded.
-
-        Returns:
-            List[EmbeddedChunk]: A list of EmbeddedChunk objects, each containing the original chunk and its embedding.
+        It first checks for cached embeddings and processes all new chunks in a single batch.
         """
         embedded_chunks = []
-        
-        # Check cache first
-        cached_chunks = []
         new_chunks = []
         
+        # Check cache first
         for chunk in chunks:
             cache_key = self._get_cache_key(chunk.content)
             if cache_key in self._embedding_cache:
                 cached_embedding = self._embedding_cache[cache_key]
-                embedded_chunk = EmbeddedChunk(
+                embedded_chunks.append(EmbeddedChunk(
                     chunk=chunk,
                     embedding=cached_embedding["embedding"],
                     embedding_model=cached_embedding["model"],
                     embedding_dim=cached_embedding["dim"]
-                )
-                cached_chunks.append(embedded_chunk)
+                ))
             else:
                 new_chunks.append(chunk)
         
-        logger.info(f"Found {len(cached_chunks)} cached embeddings, processing {len(new_chunks)} new chunks")
+        logger.info(f"Found {len(embedded_chunks)} cached embeddings, processing {len(new_chunks)} new chunks in a single batch.")
         
-        # Process new chunks in batches
+        # Process all new chunks in one go
         if new_chunks:
-            new_embedded_chunks = self._process_chunks_in_batches(new_chunks)
-            embedded_chunks.extend(new_embedded_chunks)
-        
-        # Add cached chunks
-        embedded_chunks.extend(cached_chunks)
-        
-        # Save updated cache
-        self._save_cache()
-        
-        logger.info(f"Created embeddings for {len(embedded_chunks)} chunks")
-        return embedded_chunks
-    
-    def _process_chunks_in_batches(self, chunks: List[Chunk]) -> List[EmbeddedChunk]:
-        """
-        Processes a list of chunks in batches to generate their embeddings.
-
-        Args:
-            chunks (List[Chunk]): A list of Chunk objects to be processed.
-
-        Returns:
-            List[EmbeddedChunk]: A list of EmbeddedChunk objects with their generated embeddings.
-        """
-        embedded_chunks = []
-        
-        for i in range(0, len(chunks), self.batch_size):
-            batch = chunks[i:i + self.batch_size]
-            batch_texts = [chunk.content for chunk in batch]
-            
+            batch_texts = [chunk.content for chunk in new_chunks]
             try:
-                # Generate embeddings for batch
                 if self.embedding_provider == "sentence_transformers":
                     embeddings = self.model.encode(batch_texts, convert_to_numpy=True)
                 elif self.embedding_provider == "openai":
                     embeddings = self._get_openai_embeddings(batch_texts)
                 
-                # Create EmbeddedChunk objects
-                for chunk, embedding in zip(batch, embeddings):
+                for chunk, embedding in zip(new_chunks, embeddings):
                     embedded_chunk = EmbeddedChunk(
                         chunk=chunk,
                         embedding=embedding,
@@ -195,22 +157,17 @@ class DocumentEmbedder:
                         embedding_dim=len(embedding)
                     )
                     embedded_chunks.append(embedded_chunk)
-                    
-                    # Cache the embedding
+                    # Cache the new embedding
                     cache_key = self._get_cache_key(chunk.content)
-                    self._embedding_cache[cache_key] = {
-                        "embedding": embedding,
-                        "model": self.model_name,
-                        "dim": len(embedding)
-                    }
-                
-                logger.info(f"Processed batch {i//self.batch_size + 1}/{(len(chunks)-1)//self.batch_size + 1}")
-                
+                    self._embedding_cache[cache_key] = {"embedding": embedding, "model": self.model_name, "dim": len(embedding)}
+
             except Exception as e:
-                logger.error(f"Error processing batch {i//self.batch_size + 1}: {str(e)}")
-                # Continue with next batch
-                continue
+                logger.error(f"Error processing batch of new chunks: {str(e)}")
+
+        # Save updated cache
+        self._save_cache()
         
+        logger.info(f"Finished embedding process. Total embedded chunks: {len(embedded_chunks)}")
         return embedded_chunks
     
     def _get_openai_embeddings(self, texts: List[str]) -> np.ndarray:
@@ -255,30 +212,31 @@ class DocumentEmbedder:
         Raises:
             Exception: If there's an error during query embedding.
         """
-        cache_key = self._get_cache_key(query)
-        
-        # Check cache first
-        if cache_key in self._embedding_cache:
-            return self._embedding_cache[cache_key]["embedding"]
-        
+        # This method now simply calls the batch version for a single query.
+        return self.embed_queries([query])[0]
+
+    def embed_queries(self, queries: List[str]) -> List[np.ndarray]:
+        """ 
+        Creates embeddings for a list of query strings in a single batch.
+
+        Args:
+            queries (List[str]): The list of query texts to embed.
+
+        Returns:
+            List[np.ndarray]: A list of query embeddings as NumPy arrays.
+        """
+        logger.info(f"Embedding {len(queries)} queries in a single batch.")
+        # Note: Caching is handled at the individual query level if needed, but batching is generally for performance.
         try:
             if self.embedding_provider == "sentence_transformers":
-                embedding = self.model.encode([query], convert_to_numpy=True)[0]
+                embeddings = self.model.encode(queries, convert_to_numpy=True)
             elif self.embedding_provider == "openai":
-                embedding = self._get_openai_embeddings([query])[0]
+                embeddings = self._get_openai_embeddings(queries)
             
-            # Cache the embedding
-            self._embedding_cache[cache_key] = {
-                "embedding": embedding,
-                "model": self.model_name,
-                "dim": len(embedding)
-            }
-            
-            self._save_cache()
-            return embedding
-            
+            return list(embeddings)
+
         except Exception as e:
-            logger.error(f"Error creating query embedding: {str(e)}")
+            logger.error(f"Error creating query embeddings in batch: {str(e)}")
             raise
     
     def _get_cache_key(self, text: str) -> str:

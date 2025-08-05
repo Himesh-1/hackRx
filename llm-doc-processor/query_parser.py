@@ -136,25 +136,8 @@ class QueryParser:
         Returns:
             str: The rewritten, more specific query, or the original query if rewriting fails.
         """
-        if not self.gemini_model:
-            logger.warning("Gemini model not available. Skipping query rewriting.")
-            return query
-        logger.info(f"Rewriting query: '{query}'")
-        prompt = f"""Rewrite the following user query into a more detailed and specific question.
-This will be used to retrieve relevant documents from a knowledge base.
-The rewritten query should be a single, clear question.
-Do not lose any information from the original query.
-Original query: {query}
-Rewritten query:"""
-        try:
-            response = self.gemini_model.generate_content(prompt)
-            rewritten_query = response.text.strip()
-            logger.info(f"Rewritten query: '{rewritten_query}'")
-            return rewritten_query
-        except Exception as e:
-            logger.error(f"Error rewriting query with Gemini: {e}")
-            # Fallback to the original query if rewriting fails
-            return query
+        logger.info(f"Skipping LLM-based query rewriting. Returning original query: '{query}'")
+        return query
 
     def parse_query(self, query: str) -> ParsedQuery:
         """

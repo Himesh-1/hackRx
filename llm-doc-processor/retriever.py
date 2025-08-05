@@ -51,25 +51,29 @@ class Retriever:
 
         logger.info(f"FAISS index built successfully with {self.index.ntotal} vectors.")
 
-    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 10) -> List[Tuple[EmbeddedChunk, float]]:
+    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 10, query_embedding: np.ndarray = None) -> List[Tuple[EmbeddedChunk, float]]:
         """
-        Retrieve the most relevant document chunks for a given parsed query.
+        Retrieve the most relevant document chunks for a given parsed query using a pre-computed embedding.
 
         Args:
-            parsed_query: The ParsedQuery object.
+            parsed_query: The ParsedQuery object (used for logging).
             top_k: The number of top chunks to retrieve.
+            query_embedding: The pre-computed embedding for the query.
 
         Returns:
             A list of tuples, where each tuple contains an EmbeddedChunk and its retrieval score.
         """
         logger.info(f"Retrieving top {top_k} chunks for query: '{parsed_query.original_query}'")
 
-        # Use the enhanced query for retrieval
-        query_embedding = self.embedder.embed_query(parsed_query.enhanced_query)
-        query_embedding = np.array([query_embedding]).astype('float32')
+        if query_embedding is None:
+            # This should not happen in the main workflow, but is a safeguard.
+            logger.error("CRITICAL: No pre-computed query embedding provided to retrieve method.")
+            raise ValueError("A pre-computed query embedding is required for retrieval.")
+        
+        query_embedding_np = np.array([query_embedding]).astype('float32')
 
         # Search the index
-        distances, indices = self.index.search(query_embedding, top_k)
+        distances, indices = self.index.search(query_embedding_np, top_k)
 
         # Prepare results
         results = []

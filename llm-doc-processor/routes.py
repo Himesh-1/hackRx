@@ -79,6 +79,10 @@ decision_engine = DecisionEngine()
 query_parser = QueryParser()
 
 # --- API Endpoint ---
+import asyncio
+
+import asyncio
+
 @router.post("/api/v1/hackrx/run", response_model=HackRxResponse)
 async def process_query(
     request_data: HackRxRequest,
@@ -90,53 +94,57 @@ async def process_query(
     start_time = time.time()
     logger.info(f"Received request for document: {request_data.documents}")
 
+    if not request_data.questions:
+        return HackRxResponse(answers=[])
+
     # 1. Load document from URL
     try:
         document = loader.load_document_from_url(request_data.documents)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load document from URL: {e}")
 
-    # 2. Chunk documents
+    # 2. Chunk and Embed Document
     chunks = chunker.chunk_documents([document])
-
     if not chunks:
         raise HTTPException(status_code=400, detail="No chunks generated from the document.")
-
-    # 3. Embed chunks
     embedded_chunks = embedder.embed_chunks(chunks)
-
     if not embedded_chunks:
         raise HTTPException(status_code=400, detail="No embeddings generated from chunks.")
 
-    # 4. Initialize Retriever with the current embedded chunks
-    # Retriever needs to be initialized per request as it depends on the embedded_chunks
+    # 3. Initialize Retriever
     retriever = Retriever(embedder, embedded_chunks)
+    top_k = int(os.getenv("TOP_K", 7))
 
-    # Get TOP_K from environment variable or use default
-    top_k = int(os.getenv("TOP_K", 3))
+    # 4. BATCH PROCESS ALL QUESTIONS
+    # A. Parse all questions and embed them in a single batch
+    all_questions = request_data.questions
+    parsed_queries = [query_parser.parse_query(q) for q in all_questions]
+    query_embeddings = embedder.embed_queries([pq.enhanced_query for pq in parsed_queries])
 
-    answers = []
-    for question in request_data.questions:
-        logger.info(f"Processing question: {question}")
-        # 1. Parse the query
-        parsed_query = query_parser.parse_query(question)
+    # B. Concurrently retrieve chunks for all questions in separate threads
+    retrieval_tasks = [
+        asyncio.to_thread(retriever.retrieve, pq, top_k, emb)
+        for pq, emb in zip(parsed_queries, query_embeddings)
+    ]
+    retrieved_contexts = await asyncio.gather(*retrieval_tasks)
 
-        # 2. Retrieve relevant chunks
-        retrieved_chunks = retriever.retrieve(parsed_query, top_k=top_k)
-        logger.info(f"Retrieved {len(retrieved_chunks)} chunks for question: {question}")
-        for i, (chunk, score) in enumerate(retrieved_chunks):
-            logger.debug(f"  Chunk {i+1} (Score: {score:.2f}): {chunk.chunk.content[:100]}...")
+    # C. Structure data for the decision engine
+    processed_questions = [
+        {"question": pq.original_query, "context": context}
+        for pq, context in zip(parsed_queries, retrieved_contexts)
+    ]
 
-        if not retrieved_chunks:
-            answers.append("Information not found in the document.")
-            continue
+    # 5. Make a single, batched decision with smart context stuffing
+    decision_result = decision_engine.make_decision_batch(processed_questions)
 
-        # 3. Make a decision
-        decision_result = decision_engine.make_decision(parsed_query, retrieved_chunks)
+    # 6. Format and return response
+    if "error" in decision_result:
+        raise HTTPException(status_code=500, detail=decision_result["error"])
+    
+    final_answers = decision_result.get("answers", [])
+    if len(final_answers) != len(all_questions):
+        logger.warning("Mismatch between number of questions and answers. Padding with default error.")
+        final_answers.extend(["Could not generate an answer."] * (len(all_questions) - len(final_answers)))
 
-        if "error" in decision_result:
-            answers.append(decision_result["error"])
-        else:
-            answers.append(decision_result.get("answer", "Could not generate an answer."))
-
-    return {"answers": answers}
+    logger.info(f"Total processing time: {time.time() - start_time:.2f} seconds")
+    return HackRxResponse(answers=final_answers)
