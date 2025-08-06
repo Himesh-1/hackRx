@@ -9,9 +9,10 @@ significant improvement in answer quality.
 """
 
 import logging
-from typing import List, Tuple
+from typing import List, Tuple, Union
 from sentence_transformers import CrossEncoder
 from embedder import EmbeddedChunk
+from chunker import Chunk
 from query_parser import ParsedQuery
 
 # Configure logging
@@ -39,7 +40,7 @@ class ReRanker:
             logger.error(f"Failed to load Cross-Encoder model: {e}", exc_info=True)
             raise
 
-    def rerank(self, parsed_query: ParsedQuery, chunks: List[Tuple[EmbeddedChunk, float]], top_n: int = 7) -> List[Tuple[EmbeddedChunk, float]]:
+    def rerank(self, parsed_query: ParsedQuery, chunks: List[tuple[Union[EmbeddedChunk, Chunk], float]], top_n: int = 7) -> List[tuple[Union[EmbeddedChunk, Chunk], float]]:
         """
         Re-ranks a list of retrieved chunks based on their relevance to the query.
 
@@ -57,7 +58,16 @@ class ReRanker:
         logger.info(f"Re-ranking {len(chunks)} chunks for query: '{parsed_query.original_query}'")
 
         # Create pairs of [query, chunk_content] for the model
-        query_chunk_pairs = [[parsed_query.original_query, chunk[0].chunk.content] for chunk in chunks]
+        query_chunk_pairs = []
+        for chunk_tuple in chunks:
+            chunk_obj = chunk_tuple[0]
+            if isinstance(chunk_obj, EmbeddedChunk):
+                content = chunk_obj.chunk.content
+            elif isinstance(chunk_obj, Chunk):
+                content = chunk_obj.content
+            else:
+                raise TypeError(f"Unsupported chunk type: {type(chunk_obj)}")
+            query_chunk_pairs.append([parsed_query.original_query, content])
 
         # Get the scores from the Cross-Encoder model
         scores = self.model.predict(query_chunk_pairs)
@@ -72,3 +82,5 @@ class ReRanker:
 
         logger.info(f"Re-ranking complete. Returning top {top_n} chunks.")
         return chunks[:top_n]
+
+    

@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 import logging
 import time
-from typing import List, Optional
+from typing import List, Optional, Any
 from embedder import DocumentEmbedder, EmbeddedChunk # Added for type hints
 
 # Configure logging
@@ -29,6 +29,7 @@ from query_parser import QueryParser
 from retriever import Retriever
 from llm_answer import DecisionEngine
 
+from sparse_retriever import SparseRetriever
 from reranker import ReRanker
 from utils.index_utils import load_or_build_index # Import the new utility
 
@@ -42,12 +43,15 @@ decision_engine = DecisionEngine()
 query_parser = QueryParser()
 reranker = ReRanker()
 
+global_sparse_retriever: Optional[SparseRetriever] = None
+
 # Placeholder for startup logic that will be moved to api.py
 async def initialize_global_components():
-    global global_retriever, global_embedded_chunks, global_embedder
+    global global_retriever, global_embedded_chunks, global_embedder, global_sparse_retriever
     logger.info("Initializing global components: loading or building FAISS index and embeddings...")
     global_retriever, global_embedded_chunks = load_or_build_index()
     global_embedder = DocumentEmbedder() # Initialize embedder for query embedding
+    global_sparse_retriever = SparseRetriever([chunk.chunk for chunk in global_embedded_chunks])
     logger.info("Global components initialized.")
 
 # Note: The actual @app.on_event("startup") will be in api.py,
@@ -70,47 +74,56 @@ async def process_query(
     logger.info(f"Received request for {len(request_data.questions)} questions.")
 
     # Use globally initialized components
-    retriever = global_retriever
+    dense_retriever = global_retriever
+    sparse_retriever = global_sparse_retriever
     embedder = global_embedder
-    embedded_chunks = global_embedded_chunks
 
-    if not retriever or not embedder or not embedded_chunks:
+    if not dense_retriever or not sparse_retriever or not embedder:
         raise HTTPException(status_code=500, detail="Application not fully initialized. Please try again later.")
 
-    top_k = int(os.getenv("TOP_K", 7))
+    top_k = int(os.getenv("TOP_K", 10))
 
-    # 4. BATCH PROCESS ALL QUESTIONS
     # A. Parse all questions and embed them in a single batch
     all_questions = request_data.questions
     parsed_queries = [query_parser.parse_query(q) for q in all_questions]
     query_embeddings = embedder.embed_queries([pq.enhanced_query for pq in parsed_queries])
 
-    # B. Concurrently retrieve a larger set of chunks for re-ranking
-    initial_top_k = 20
-    retrieval_tasks = [
-        asyncio.to_thread(retriever.retrieve, pq, initial_top_k, emb)
+    
+
+    # B. Concurrently retrieve from both dense and sparse retrievers
+    dense_retrieval_tasks = [
+        asyncio.to_thread(dense_retriever.retrieve, pq, top_k, emb)
         for pq, emb in zip(parsed_queries, query_embeddings)
     ]
-    initial_retrievals = await asyncio.gather(*retrieval_tasks)
+    sparse_retrieval_tasks = [
+        asyncio.to_thread(sparse_retriever.retrieve, pq, top_k)
+        for pq in parsed_queries
+    ]
 
-    # C. Concurrently re-rank the results for each question
-    rerank_top_n = 7
+    dense_results = await asyncio.gather(*dense_retrieval_tasks)
+    sparse_results = await asyncio.gather(*sparse_retrieval_tasks)
+
+    # C. Fuse the results using Reciprocal Rank Fusion (RRF)
+    fused_results = []
+    for dense_res, sparse_res in zip(dense_results, sparse_results):
+        fused_results.append(_reciprocal_rank_fusion([dense_res, sparse_res]))
+
+    # D. Concurrently re-rank the fused results for each question
+    rerank_top_n = 5
     rerank_tasks = [
-        asyncio.to_thread(reranker.rerank, pq, initial_ctx, rerank_top_n)
-        for pq, initial_ctx in zip(parsed_queries, initial_retrievals)
+        asyncio.to_thread(reranker.rerank, pq, fused_res, rerank_top_n)
+        for pq, fused_res in zip(parsed_queries, fused_results)
     ]
     reranked_contexts = await asyncio.gather(*rerank_tasks)
 
-    # D. Structure data for the decision engine
+    # E. Make decisions for each question in a batch
     processed_questions = [
         {"question": pq.original_query, "context": context}
         for pq, context in zip(parsed_queries, reranked_contexts)
     ]
+    decision_result = decision_engine.make_decisions_batch(processed_questions)
 
-    # 5. Make a single, batched decision with smart context stuffing
-    decision_result = decision_engine.make_decision_batch(processed_questions)
-
-    # 6. Format and return response
+    # F. Format and return response
     if "error" in decision_result:
         raise HTTPException(status_code=500, detail=decision_result["error"])
     
@@ -121,3 +134,32 @@ async def process_query(
 
     logger.info(f"Total processing time: {time.time() - start_time:.2f} seconds")
     return HackRxResponse(answers=final_answers)
+
+def _reciprocal_rank_fusion(results_lists: List[List[tuple[Any, float]]], k: int = 60) -> List[tuple[Any, float]]:
+    """
+    Performs Reciprocal Rank Fusion on a list of ranked results.
+    """
+    fused_scores = {}
+    for results in results_lists:
+        for i, (doc, score) in enumerate(results):
+            rank = i + 1
+            # Safely get chunk_id from either EmbeddedChunk or Chunk
+            if hasattr(doc, 'chunk_id'): # For Chunk objects
+                current_chunk_id = doc.chunk_id
+            elif hasattr(doc, 'chunk') and hasattr(doc.chunk, 'chunk_id'): # For EmbeddedChunk objects
+                current_chunk_id = doc.chunk.chunk_id
+            else:
+                logger.warning(f"Document object {doc} has no identifiable chunk_id. Skipping.")
+                continue
+
+            if current_chunk_id not in fused_scores:
+                fused_scores[current_chunk_id] = {"score": 0, "doc": doc}
+            fused_scores[current_chunk_id]["score"] += 1 / (k + rank)
+
+    reranked_results = sorted(fused_scores.values(), key=lambda x: x["score"], reverse=True)
+
+    return [(item["doc"], item["score"]) for item in reranked_results]
+
+    
+
+    

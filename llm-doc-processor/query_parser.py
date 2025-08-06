@@ -50,6 +50,7 @@ class QueryParser:
         self._setup_patterns()
         self.gemini_model = None
         self.api_key = os.getenv("GEMINI_API_KEY")
+        self.hyde_cache = {}  # Initialize HyDE cache as an instance variable
         if not self.api_key:
             logger.warning("GEMINI_API_KEY not found in environment variables. Query rewriting will be disabled.")
         else:
@@ -133,17 +134,41 @@ class QueryParser:
             'eligibility_check': [r'\b(eligible|qualify|can\s+I\s+get)\b'],
         }
 
+
     def _rewrite_query(self, query: str) -> str:
         """
-        Rewrites the user query into a more detailed and specific question using an LLM.
-        This helps in retrieving more relevant documents from the knowledge base.
+        Generates a hypothetical answer to the user's query to be used for retrieval.
+        This is an implementation of Hypothetical Document Embeddings (HyDE).
         Args:
             query (str): The original user query.
         Returns:
-            str: The rewritten, more specific query, or the original query if rewriting fails.
+            str: The generated hypothetical answer, or the original query if it fails.
         """
-        logger.info(f"Skipping LLM-based query rewriting. Returning original query: '{query}'")
-        return query
+        if query in self.hyde_cache:
+            logger.info(f"Using cached hypothetical answer for query: '{query}'")
+            return self.hyde_cache[query]
+
+        if not self.gemini_model:
+            logger.warning("Gemini model not initialized, skipping HyDE generation.")
+            return query
+
+        prompt = (
+            "You are an expert in insurance policies. A user is asking a question. "
+            "Please generate a detailed, hypothetical answer to the following question. "
+            "This answer should be written as if it were an excerpt from a policy document, "
+            "containing the kind of information and phrasing one would expect to find there. "
+            "This hypothetical answer will be used to find the *actual* answer in the real document."
+            f"\n\nUser's Question: '{query}'\n\n"
+            "Hypothetical Answer:"
+        )
+        try:
+            response = self.gemini_model.generate_content(prompt)
+            hypothetical_answer = response.text.strip()
+            logger.info(f"Generated Hypothetical Answer for '{query}': '{hypothetical_answer}'")
+            return hypothetical_answer
+        except Exception as e:
+            logger.error(f"Failed to generate hypothetical answer with Gemini: {e}")
+            return query
 
     def parse_query(self, query: str) -> ParsedQuery:
         """

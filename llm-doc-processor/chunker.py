@@ -32,21 +32,20 @@ class DocumentChunker:
     """
     
     def __init__(self,
-                 chunk_size: int = None,  # Changed to None to allow env var to set default
-                 overlap_size: int = 300,  # Doubled overlap for better continuity
-                 min_chunk_size: int = 500, # Increased min size for more complete chunks
+                 chunk_size: int = 1024,
+                 overlap_size: int = 200,
+                 min_chunk_size: int = 100,
                  chunking_strategy: str = "hybrid"):
         """
         Initialize chunker with configuration.
         
         Args:
-            chunk_size: Target size for each chunk (in characters). Defaults to CHUNK_SIZE env var or 2048.
+            chunk_size: Target size for each chunk (in characters).
             overlap_size: Overlap between adjacent chunks.
             min_chunk_size: Minimum chunk size to avoid tiny fragments.
             chunking_strategy: "fixed", "sentence", "smart", or "hybrid".
         """
-        import os
-        self.chunk_size = int(os.getenv("CHUNK_SIZE", 2048)) if chunk_size is None else chunk_size
+        self.chunk_size = chunk_size
         self.overlap_size = overlap_size
         self.min_chunk_size = min_chunk_size
         self.chunking_strategy = chunking_strategy

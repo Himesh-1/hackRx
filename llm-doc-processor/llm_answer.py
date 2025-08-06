@@ -50,7 +50,34 @@ class DecisionEngine:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(self.model_name)
 
-    def make_decision_batch(self, processed_questions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    
+
+    
+
+
+
+
+
+    def _call_gemini_with_retry(self, prompt: str, max_retries: int = 5, initial_delay: float = 1.0):
+        """
+        Calls the Gemini API with retry logic and exponential backoff.
+        """
+        for i in range(max_retries):
+            try:
+                logger.info(f"Attempt {i+1}/{max_retries} to call Gemini API.")
+                response = self.model.generate_content(prompt)
+                return response
+            except Exception as e:
+                logger.error(f"Gemini API call failed (Attempt {i+1}/{max_retries}): {e}")
+                if "rate limit" in str(e).lower() or "resource exhausted" in str(e).lower() or "quota" in str(e).lower():
+                    delay = initial_delay * (2 ** i) # Exponential backoff
+                    logger.warning(f"Rate limit hit. Retrying in {delay:.2f} seconds... (Attempt {i+1}/{max_retries})")
+                    time.sleep(delay)
+                else:
+                    raise # Re-raise other exceptions
+        raise Exception(f"Failed to get a response from Gemini API after {max_retries} retries due to rate limit.")
+
+    def make_decisions_batch(self, processed_questions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Makes a single, batched decision for a list of questions with smart context stuffing.
         """
@@ -75,37 +102,11 @@ class DecisionEngine:
             logger.error(f"Error during LLM API call: {e}", exc_info=True)
             return {"error": "Failed to get a response from the language model.", "details": str(e)}
 
-    def _call_gemini_with_retry(self, prompt: str, max_retries: int = 5, initial_delay: float = 1.0):
-        """
-        Calls the Gemini API with retry logic and exponential backoff.
-        """
-        for i in range(max_retries):
-            try:
-                logger.info(f"Attempt {i+1}/{max_retries} to call Gemini API.")
-                response = self.model.generate_content(prompt)
-                return response
-            except Exception as e:
-                logger.error(f"Gemini API call failed (Attempt {i+1}/{max_retries}): {e}")
-                if "rate limit" in str(e).lower() or "resource exhausted" in str(e).lower() or "quota" in str(e).lower():
-                    delay = initial_delay * (2 ** i) # Exponential backoff
-                    logger.warning(f"Rate limit hit. Retrying in {delay:.2f} seconds... (Attempt {i+1}/{max_retries})")
-                    time.sleep(delay)
-                else:
-                    raise # Re-raise other exceptions
-        raise Exception(f"Failed to get a response from Gemini API after {max_retries} retries due to rate limit.")
-
     def _construct_batch_prompt(self, processed_questions: List[Dict[str, Any]]) -> str:
         """Constructs a single, detailed prompt for a batch of questions with token-aware context stuffing and Chain-of-Thought reasoning."""
-        base_prompt_template = """You are an AI Insurance Policy Expert. Your task is to provide clear and accurate answers to a list of questions based *only* on the provided document excerpts.
+        base_prompt_template = """You are an AI Insurance Policy Expert. Your task is to provide clear and accurate answers to a list of questions based *only* on the provided document excerpts. For each question, synthesize the information from the relevant clauses to form a concise answer. If the answer to any question is not found in the provided text, respond with "Information not found in the document." for that specific question.
 
-**Your Reasoning Process (Chain-of-Thought):**
-
-1.  **Analyze the Question:** For each question, understand its core intent.
-2.  **Extract Key Sentences:** From the "Relevant Policy Clauses" provided for that question, identify and extract the exact sentences that directly answer the question.
-3.  **Synthesize the Final Answer:** Based *only* on the key sentences you extracted, construct a final, concise answer. Keep the answer to a similar length as this example: 'A hospital is defined as an institution with at least 10 inpatient beds, qualified nursing staff, and a fully equipped operation theatre.'
-
-**Final Output Format:**
-
+**Output Format:**
 Your final output *must* be a single, valid JSON object. This object must contain a single key, "answers", which is a list of strings. Each string in the list should be the synthesized answer to the corresponding question, in the order they were presented.
 
 **Example JSON Output:**
@@ -124,7 +125,7 @@ Your final output *must* be a single, valid JSON object. This object must contai
 
 ---
 
-Now, follow the reasoning process and provide the final answers in the specified JSON format.
+Now, provide the final answers in the specified JSON format.
 """
         
         questions_with_context = []
@@ -156,7 +157,13 @@ Now, follow the reasoning process and provide the final answers in the specified
                     logger.info(f"Reached max chunks ({max_chunks_per_question}) for this question. Skipping further chunks.")
                     break
 
-                chunk_str = f"--- Chunk from {chunk.chunk.source_document} (Score: {score:.2f}) ---{chunk.chunk.content}"
+                actual_chunk = chunk[0] # Get the actual chunk object from the tuple
+                source = actual_chunk.source_document
+                content = actual_chunk.content
+                chunk_str = f"--- Chunk from {source} (Score: {score:.2f}) --- {content}"
+
+
+
                 chunk_tokens = _estimate_tokens(chunk_str)
                 if current_tokens + chunk_tokens <= self.max_prompt_tokens:
                     context_for_question.append(chunk_str)

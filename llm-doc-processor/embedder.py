@@ -58,8 +58,8 @@ class DocumentEmbedder:
     """
     
     def __init__(self, 
-                 model_name: str = "all-MiniLM-L6-v2",
-                 embedding_provider: str = "sentence_transformers",
+                 model_name: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
+                 embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "sentence_transformers"),
                  cache_dir: str = "data/embeddings/",
                  batch_size: int = 32):
         """
