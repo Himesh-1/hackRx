@@ -34,13 +34,16 @@ class Retriever:
         self.embedder = embedder
         self.embedded_chunks = embedded_chunks
         self.index = None
-        self._build_index()
 
     def _build_index(self):
         """
         Builds the FAISS index from the embedded chunks.
         The index is an IndexFlatIP, suitable for inner product (cosine similarity) search.
+        Only builds the index if it hasn't been built yet.
         """
+        if self.index is not None:
+            return # Index already built
+
         logger.info("Building FAISS index...")
         embedding_dim = self.embedded_chunks[0].embedding_dim
         self.index = faiss.IndexFlatIP(embedding_dim)  # Using Inner Product for cosine similarity
@@ -64,6 +67,8 @@ class Retriever:
             A list of tuples, where each tuple contains an EmbeddedChunk and its retrieval score.
         """
         logger.info(f"Retrieving top {top_k} chunks for query: '{parsed_query.original_query}'")
+
+        self._build_index() # Ensure index is built before retrieval
 
         if query_embedding is None:
             # This should not happen in the main workflow, but is a safeguard.

@@ -9,6 +9,7 @@ import os
 import json
 import logging
 import re
+import time # Added for rate limiting
 from typing import List, Dict, Any, Tuple
 import google.generativeai as genai
 from query_parser import ParsedQuery
@@ -67,12 +68,31 @@ class DecisionEngine:
             return {"error": "Internal error: Prompt construction failed token validation."}
 
         try:
-            response = self.model.generate_content(prompt)
+            response = self._call_gemini_with_retry(prompt)
             logger.info(f"LLM raw response: {response.text!r}")
             return self._parse_llm_batch_response(response.text)
         except Exception as e:
             logger.error(f"Error during LLM API call: {e}", exc_info=True)
             return {"error": "Failed to get a response from the language model.", "details": str(e)}
+
+    def _call_gemini_with_retry(self, prompt: str, max_retries: int = 5, initial_delay: float = 1.0):
+        """
+        Calls the Gemini API with retry logic and exponential backoff.
+        """
+        for i in range(max_retries):
+            try:
+                logger.info(f"Attempt {i+1}/{max_retries} to call Gemini API.")
+                response = self.model.generate_content(prompt)
+                return response
+            except Exception as e:
+                logger.error(f"Gemini API call failed (Attempt {i+1}/{max_retries}): {e}")
+                if "rate limit" in str(e).lower() or "resource exhausted" in str(e).lower() or "quota" in str(e).lower():
+                    delay = initial_delay * (2 ** i) # Exponential backoff
+                    logger.warning(f"Rate limit hit. Retrying in {delay:.2f} seconds... (Attempt {i+1}/{max_retries})")
+                    time.sleep(delay)
+                else:
+                    raise # Re-raise other exceptions
+        raise Exception(f"Failed to get a response from Gemini API after {max_retries} retries due to rate limit.")
 
     def _construct_batch_prompt(self, processed_questions: List[Dict[str, Any]]) -> str:
         """Constructs a single, detailed prompt for a batch of questions with token-aware context stuffing and Chain-of-Thought reasoning."""
@@ -128,13 +148,20 @@ Now, follow the reasoning process and provide the final answers in the specified
 
             current_tokens += question_tokens
             context_for_question = []
+            max_chunks_per_question = 3 # Hard limit to reduce token count
+            chunks_added = 0
 
             for chunk, score in item['context']:
-                chunk_str = f"--- Chunk from {chunk.chunk.source_document} (Score: {score:.2f}) ---\n{chunk.chunk.content}\n"
+                if chunks_added >= max_chunks_per_question:
+                    logger.info(f"Reached max chunks ({max_chunks_per_question}) for this question. Skipping further chunks.")
+                    break
+
+                chunk_str = f"--- Chunk from {chunk.chunk.source_document} (Score: {score:.2f}) ---{chunk.chunk.content}"
                 chunk_tokens = _estimate_tokens(chunk_str)
                 if current_tokens + chunk_tokens <= self.max_prompt_tokens:
                     context_for_question.append(chunk_str)
                     current_tokens += chunk_tokens
+                    chunks_added += 1
                 else:
                     logger.info("Stopping context stuffing for this question to stay within token limit.")
                     break

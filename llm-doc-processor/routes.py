@@ -7,15 +7,10 @@ Defines the API endpoints for the document processing service.
 import os
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from query_parser import QueryParser
-from retriever import Retriever
-from llm_answer import DecisionEngine
-from loader import DocumentLoader
-from chunker import DocumentChunker
-from embedder import DocumentEmbedder
 import logging
 import time
 from typing import List, Optional
+from embedder import DocumentEmbedder, EmbeddedChunk # Added for type hints
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,60 +21,37 @@ router = APIRouter()
 
 # --- Request and Response Models ---
 class HackRxRequest(BaseModel):
-    documents: str
     questions: List[str]
 
 class HackRxResponse(BaseModel):
     answers: List[str]
-
-# --- API Endpoint ---
-class HackRxResponse(BaseModel):
-    answers: List[str]
-
-"""
-API Routes Module
-Defines the API endpoints for the document processing service.
-"""
-
-import os
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
 from query_parser import QueryParser
 from retriever import Retriever
 from llm_answer import DecisionEngine
-from loader import DocumentLoader
-from chunker import DocumentChunker
-from embedder import DocumentEmbedder
-import logging
-import time
-from typing import List, Optional
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# --- API Router ---
-router = APIRouter()
-
-# --- Request and Response Models ---
-class HackRxRequest(BaseModel):
-    documents: str
-    questions: List[str]
-
-class HackRxResponse(BaseModel):
-    answers: List[str]
 
 from reranker import ReRanker
+from utils.index_utils import load_or_build_index # Import the new utility
 
-# --- Initialize global components ---
-# These components are initialized once when the application starts
-# and reused across all requests to improve performance and reduce overhead.
-loader = DocumentLoader()
-chunker = DocumentChunker()
-embedder = DocumentEmbedder()
+# --- Global Components (initialized once at startup) ---
+# These will be populated in the startup event
+global_retriever: Optional[Retriever] = None
+global_embedded_chunks: Optional[List[EmbeddedChunk]] = None
+global_embedder: Optional[DocumentEmbedder] = None # Keep embedder for query embedding
+
 decision_engine = DecisionEngine()
 query_parser = QueryParser()
 reranker = ReRanker()
+
+# Placeholder for startup logic that will be moved to api.py
+async def initialize_global_components():
+    global global_retriever, global_embedded_chunks, global_embedder
+    logger.info("Initializing global components: loading or building FAISS index and embeddings...")
+    global_retriever, global_embedded_chunks = load_or_build_index()
+    global_embedder = DocumentEmbedder() # Initialize embedder for query embedding
+    logger.info("Global components initialized.")
+
+# Note: The actual @app.on_event("startup") will be in api.py,
+# and will call initialize_global_components.
 
 # --- API Endpoint ---
 import asyncio
@@ -95,27 +67,16 @@ async def process_query(
     Process a document and a list of questions and return answers.
     """
     start_time = time.time()
-    logger.info(f"Received request for document: {request_data.documents}")
+    logger.info(f"Received request for {len(request_data.questions)} questions.")
 
-    if not request_data.questions:
-        return HackRxResponse(answers=[])
+    # Use globally initialized components
+    retriever = global_retriever
+    embedder = global_embedder
+    embedded_chunks = global_embedded_chunks
 
-    # 1. Load document from URL
-    try:
-        document = loader.load_document_from_url(request_data.documents)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to load document from URL: {e}")
+    if not retriever or not embedder or not embedded_chunks:
+        raise HTTPException(status_code=500, detail="Application not fully initialized. Please try again later.")
 
-    # 2. Chunk and Embed Document
-    chunks = chunker.chunk_documents([document])
-    if not chunks:
-        raise HTTPException(status_code=400, detail="No chunks generated from the document.")
-    embedded_chunks = embedder.embed_chunks(chunks)
-    if not embedded_chunks:
-        raise HTTPException(status_code=400, detail="No embeddings generated from chunks.")
-
-    # 3. Initialize Retriever
-    retriever = Retriever(embedder, embedded_chunks)
     top_k = int(os.getenv("TOP_K", 7))
 
     # 4. BATCH PROCESS ALL QUESTIONS

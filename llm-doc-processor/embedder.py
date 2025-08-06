@@ -79,9 +79,8 @@ class DocumentEmbedder:
         # Create cache directory
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        # Initialize embedding model
+        # Initialize embedding model (lazy loading)
         self.model = None
-        self._initialize_model()
         
         # Cache for embeddings
         self._embedding_cache = {}
@@ -91,11 +90,15 @@ class DocumentEmbedder:
         """
         Initializes the embedding model based on the configured provider.
         Supports 'sentence_transformers' and 'openai'.
+        Only loads the model if it hasn't been loaded yet.
 
         Raises:
             ValueError: If an unsupported embedding provider is specified.
             Exception: If there's an error during model initialization.
         """
+        if self.model is not None:
+            return # Model already loaded
+
         try:
             if self.embedding_provider == "sentence_transformers":
                 self.model = SentenceTransformer(self.model_name)
@@ -117,6 +120,7 @@ class DocumentEmbedder:
             raise
     
     def embed_chunks(self, chunks: List[Chunk]) -> List[EmbeddedChunk]:
+        self._initialize_model() # Ensure model is loaded before use
         """
         Creates embeddings for a list of text chunks.
         It first checks for cached embeddings and processes all new chunks in a single batch.
@@ -225,6 +229,7 @@ class DocumentEmbedder:
         Returns:
             List[np.ndarray]: A list of query embeddings as NumPy arrays.
         """
+        self._initialize_model() # Ensure model is loaded before use
         logger.info(f"Embedding {len(queries)} queries in a single batch.")
         # Note: Caching is handled at the individual query level if needed, but batching is generally for performance.
         try:

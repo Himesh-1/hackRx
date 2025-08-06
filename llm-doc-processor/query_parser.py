@@ -45,7 +45,8 @@ class QueryParser:
         Args:
             spacy_model: The Spacy model to use for NLP processing.
         """
-        self.nlp = self._load_spacy_model(spacy_model)
+        self.spacy_model = spacy_model # Store the model name
+        self.nlp = None # Initialize lazily
         self._setup_patterns()
         self.gemini_model = None
         self.api_key = os.getenv("GEMINI_API_KEY")
@@ -67,13 +68,18 @@ class QueryParser:
         Returns:
             Optional[spacy.Language]: The loaded Spacy Language model, or None if loading fails.
         """
+        if self.nlp is not None:
+            return self.nlp # Model already loaded
+
         try:
-            return spacy.load(model_name)
+            self.nlp = spacy.load(model_name)
+            return self.nlp
         except OSError:
             logger.warning(f"Spacy model '{model_name}' not found. Downloading...")
             try:
                 spacy.cli.download(model_name)
-                return spacy.load(model_name)
+                self.nlp = spacy.load(model_name)
+                return self.nlp
             except Exception as e:
                 logger.error(f"Failed to download or load Spacy model '{model_name}': {e}")
                 return None
@@ -150,6 +156,7 @@ class QueryParser:
             A ParsedQuery object containing the extracted information.
         """
         logger.info(f"Starting query parsing for: '{query}'")
+        self._load_spacy_model(self.spacy_model) # Ensure model is loaded before use
         cleaned_query = self._clean_query(query)
         doc = self.nlp(cleaned_query) if self.nlp else None
         entities = self._extract_entities(cleaned_query, doc)

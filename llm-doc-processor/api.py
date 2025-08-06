@@ -5,7 +5,7 @@ Initializes the FastAPI application and the core processing components.
 """
 
 from fastapi import FastAPI
-from routes import router
+from routes import router, initialize_global_components # Import initialize_global_components
 from llm_answer import DecisionEngine
 import logging
 
@@ -41,7 +41,7 @@ app.include_router(router)
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Application startup: No global components to initialize at this time.")
-    # This is where you would initialize a global LLM client if it were a singleton
-    # For now, it's handled per request in routes.py
+    logger.info("Application startup: Initializing global components...")
+    await initialize_global_components() # Call the initialization function
+    logger.info("Application startup: Global components initialized.")
 
