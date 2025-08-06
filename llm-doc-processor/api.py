@@ -3,7 +3,7 @@
 Main Application Module
 Initializes the FastAPI application and the core processing components.
 """
-
+from pyngrok import ngrok
 from fastapi import FastAPI
 from routes import router, initialize_global_components # Import initialize_global_components
 from llm_answer import DecisionEngine
