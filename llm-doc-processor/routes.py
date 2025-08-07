@@ -1,16 +1,29 @@
-
 """
-API Routes Module
+API Routes Module - Minimal Fix Version
 Defines the API endpoints for the document processing service.
 """
 
 import os
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+import asyncio
 import logging
 import time
-from typing import List, Optional, Any
-from embedder import DocumentEmbedder, EmbeddedChunk # Added for type hints
+from typing import List, Any, Tuple, Union, Dict
+import os
+import asyncio
+import logging
+import time # Import time
+from typing import List, Any, Tuple, Union, Dict
+from fastapi import APIRouter, HTTPException, Request # Import Request
+from pydantic import BaseModel
+
+from loader import DocumentLoader
+from chunker import DocumentChunker, Chunk
+from embedder import DocumentEmbedder, EmbeddedChunk
+from query_parser import QueryParser
+from retriever import Retriever
+from sparse_retriever import SparseRetriever
+from reranker import ReRanker
+from llm_answer import DecisionEngine
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,121 +34,158 @@ router = APIRouter()
 
 # --- Request and Response Models ---
 class HackRxRequest(BaseModel):
+    documents: str
     questions: List[str]
 
 class HackRxResponse(BaseModel):
     answers: List[str]
-from query_parser import QueryParser
-from retriever import Retriever
-from llm_answer import DecisionEngine
-
-from sparse_retriever import SparseRetriever
-from reranker import ReRanker
-from utils.index_utils import load_or_build_index # Import the new utility
-
-# --- Global Components (initialized once at startup) ---
-# These will be populated in the startup event
-global_retriever: Optional[Retriever] = None
-global_embedded_chunks: Optional[List[EmbeddedChunk]] = None
-global_embedder: Optional[DocumentEmbedder] = None # Keep embedder for query embedding
-
-decision_engine = DecisionEngine()
-query_parser = QueryParser()
-reranker = ReRanker()
-
-global_sparse_retriever: Optional[SparseRetriever] = None
-
-# Placeholder for startup logic that will be moved to api.py
-async def initialize_global_components():
-    global global_retriever, global_embedded_chunks, global_embedder, global_sparse_retriever
-    logger.info("Initializing global components: loading or building FAISS index and embeddings...")
-    global_retriever, global_embedded_chunks = load_or_build_index()
-    global_embedder = DocumentEmbedder() # Initialize embedder for query embedding
-    global_sparse_retriever = SparseRetriever([chunk.chunk for chunk in global_embedded_chunks])
-    logger.info("Global components initialized.")
-
-# Note: The actual @app.on_event("startup") will be in api.py,
-# and will call initialize_global_components.
 
 # --- API Endpoint ---
-import asyncio
-
-import asyncio
-
 @router.post("/api/v1/hackrx/run", response_model=HackRxResponse)
-async def process_query(
-    request_data: HackRxRequest,
-    request: Request # Access to app.state
-):
+async def process_query(request_data: HackRxRequest, request: Request):
     """
     Process a document and a list of questions and return answers.
     """
     start_time = time.time()
-    logger.info(f"Received request for {len(request_data.questions)} questions.")
+    logger.info(f"Received request for document: {request_data.documents} and {len(request_data.questions)} questions.")
 
-    # Use globally initialized components
-    dense_retriever = global_retriever
-    sparse_retriever = global_sparse_retriever
-    embedder = global_embedder
+    try:
+        # Access pre-loaded components from app.state
+        dense_retriever = request.app.state.dense_retriever
+        sparse_retriever = request.app.state.sparse_retriever
+        embedded_chunks = request.app.state.embedded_chunks
+        chunks = request.app.state.chunks # Original chunks for sparse retriever mapping
 
-    if not dense_retriever or not sparse_retriever or not embedder:
-        raise HTTPException(status_code=500, detail="Application not fully initialized. Please try again later.")
+        if not dense_retriever or not sparse_retriever or not embedded_chunks or not chunks:
+            raise HTTPException(status_code=500, detail="Application not fully initialized. Indices not loaded.")
 
-    top_k = int(os.getenv("TOP_K", 10))
+        # 5. Process Questions
+        process_questions_start = time.time()
+        query_parser = QueryParser()
+        reranker = ReRanker()
+        decision_engine = DecisionEngine()
 
-    # A. Parse all questions and embed them in a single batch
-    all_questions = request_data.questions
-    parsed_queries = [query_parser.parse_query(q) for q in all_questions]
-    query_embeddings = embedder.embed_queries([pq.enhanced_query for pq in parsed_queries])
+        top_k = int(os.getenv("TOP_K", 5))
+        rerank_top_n = 5
 
-    
+        all_questions = request_data.questions
+        query_parser_instance = QueryParser() # Instantiate QueryParser
+        query_parser_instance = QueryParser() # Instantiate QueryParser
+        parsed_queries = query_parser_instance.parse_queries(all_questions)
+        
+        # Embed queries using a fresh embedder instance if needed, or pass the one from app.state if it's a singleton
+        # For now, let's assume embedder is stateless for query embedding and can be instantiated here
+        query_embedder = DocumentEmbedder() 
+        query_embeddings = query_embedder.embed_queries([pq.enhanced_query for pq in parsed_queries])
 
-    # B. Concurrently retrieve from both dense and sparse retrievers
-    dense_retrieval_tasks = [
-        asyncio.to_thread(dense_retriever.retrieve, pq, top_k, emb)
-        for pq, emb in zip(parsed_queries, query_embeddings)
-    ]
-    sparse_retrieval_tasks = [
-        asyncio.to_thread(sparse_retriever.retrieve, pq, top_k)
-        for pq in parsed_queries
-    ]
+        # Concurrently retrieve from both dense and sparse retrievers
+        retrieval_start = time.time()
+        dense_retrieval_tasks = [
+            asyncio.to_thread(dense_retriever.retrieve, pq, top_k, emb)
+            for pq, emb in zip(parsed_queries, query_embeddings)
+        ]
+        sparse_retrieval_tasks = [
+            asyncio.to_thread(sparse_retriever.retrieve, pq, top_k)
+            for pq in parsed_queries
+        ]
 
-    dense_results = await asyncio.gather(*dense_retrieval_tasks)
-    sparse_results = await asyncio.gather(*sparse_retrieval_tasks)
+        dense_results = await asyncio.gather(*dense_retrieval_tasks)
+        sparse_results = await asyncio.gather(*sparse_retrieval_tasks)
+        retrieval_end = time.time()
+        logger.info(f"Step 5a: Retrieval (Dense + Sparse) took {retrieval_end - retrieval_start:.2f} seconds")
 
-    # C. Fuse the results using Reciprocal Rank Fusion (RRF)
-    fused_results = []
-    for dense_res, sparse_res in zip(dense_results, sparse_results):
-        fused_results.append(_reciprocal_rank_fusion([dense_res, sparse_res]))
+        similarity_threshold = float(os.getenv("SIMILARITY_THRESHOLD", 0.6))
 
-    # D. Concurrently re-rank the fused results for each question
-    rerank_top_n = 5
-    rerank_tasks = [
-        asyncio.to_thread(reranker.rerank, pq, fused_res, rerank_top_n)
-        for pq, fused_res in zip(parsed_queries, fused_results)
-    ]
-    reranked_contexts = await asyncio.gather(*rerank_tasks)
+        # Filter dense results by similarity threshold
+        filter_start = time.time()
+        filtered_dense_results = []
+        for res_list in dense_results:
+            filtered_list = [(doc, score) for doc, score in res_list if score >= similarity_threshold]
+            filtered_dense_results.append(filtered_list)
+        filter_end = time.time()
+        logger.info(f"Step 5b: Filtering Dense Results took {filter_end - filter_start:.2f} seconds")
+        
+        # Note: For sparse results (BM25), a direct similarity threshold like 0.6 might not be directly applicable
+        # as BM25 scores are not normalized like cosine similarity. We'll keep them as is for now,
+        # or a separate, context-specific threshold would be needed for BM25.
 
-    # E. Make decisions for each question in a batch
-    processed_questions = [
-        {"question": pq.original_query, "context": context}
-        for pq, context in zip(parsed_queries, reranked_contexts)
-    ]
-    decision_result = decision_engine.make_decisions_batch(processed_questions)
+        # Fuse the results
+        fuse_start = time.time()
+        fused_results = []
+        for dense_res, sparse_res in zip(filtered_dense_results, sparse_results):
+            # Convert sparse results to the same format as dense results
+            # Need to map sparse_res_content back to original Chunk objects
+            sparse_res_chunks_with_objects = []
+            for content, score in sparse_res:
+                # Find the original chunk object for this content
+                original_chunk = next((c for c in chunks if c.content == content), None)
+                if original_chunk:
+                    sparse_res_chunks_with_objects.append((original_chunk, score))
+                else:
+                    logger.warning(f"Original chunk object not found for content: {content[:50]}...")
 
-    # F. Format and return response
-    if "error" in decision_result:
-        raise HTTPException(status_code=500, detail=decision_result["error"])
-    
-    final_answers = decision_result.get("answers", [])
-    if len(final_answers) != len(all_questions):
-        logger.warning("Mismatch between number of questions and answers. Padding with default error.")
-        final_answers.extend(["Could not generate an answer."] * (len(all_questions) - len(final_answers)))
+            fused_results.append(_reciprocal_rank_fusion([dense_res, sparse_res_chunks_with_objects]))
+        fuse_end = time.time()
+        logger.info(f"Step 5c: Fusing Results took {fuse_end - fuse_start:.2f} seconds")
 
-    logger.info(f"Total processing time: {time.time() - start_time:.2f} seconds")
-    return HackRxResponse(answers=final_answers)
+        # Re-rank the fused results
+        rerank_start = time.time()
+        rerank_tasks = [
+            asyncio.to_thread(reranker.rerank, pq, fused_res_for_q, rerank_top_n)
+            for pq, fused_res_for_q in zip(parsed_queries, fused_results)
+        ]
+        reranked_contexts = await asyncio.gather(*rerank_tasks)
+        rerank_end = time.time()
+        logger.info(f"Step 5d: Re-ranking took {rerank_end - rerank_start:.2f} seconds")
 
-def _reciprocal_rank_fusion(results_lists: List[List[tuple[Any, float]]], k: int = 60) -> List[tuple[Any, float]]:
+        # Generate answers
+        llm_start = time.time()
+        processed_questions = []
+        for pq, context_list_with_scores in zip(parsed_queries, reranked_contexts):
+            # context_list_with_scores now contains (Chunk/EmbeddedChunk, score) tuples
+            # We need to pass the Chunk/EmbeddedChunk objects to the DecisionEngine
+            processed_questions.append({
+                "question": pq.original_query,
+                "context": [item[0] for item in context_list_with_scores] # Pass the chunk object
+            })
+
+        try:
+            decision_result = decision_engine.make_decisions_batch(processed_questions)
+        except KeyError as e:
+            logger.error(f"KeyError in decision engine - missing template variable: {e}")
+            # Return default answers for all questions
+            decision_result = {
+                "answers": [{"answer": "Sorry, I cannot process this question due to a template error.", "source_clauses": []}] * len(all_questions)
+            }
+        except Exception as e:
+            logger.error(f"Error in decision engine: {e}")
+            decision_result = {
+                "answers": [{"answer": "Sorry, I cannot process this question due to an internal error.", "source_clauses": []}] * len(all_questions)
+            }
+        llm_end = time.time()
+        logger.info(f"Step 5e: LLM Answer Generation took {llm_end - llm_start:.2f} seconds")
+
+        if "error" in decision_result:
+            raise HTTPException(status_code=500, detail=decision_result["error"])
+
+        final_answers = decision_result.get("answers", [])
+        # Ensure all questions have an answer, even if empty
+        if len(final_answers) != len(all_questions):
+            logger.warning("Mismatch between number of questions and answers. Padding with default error.")
+            while len(final_answers) < len(all_questions):
+                final_answers.append("Could not generate an answer.")
+
+        logger.info(f"Total processing time: {time.time() - start_time:.2f} seconds")
+        return HackRxResponse(answers=final_answers)
+
+    except Exception as e:
+        logger.error(f"An error occurred during processing: {e}")
+        logger.error(f"Exception type: {type(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def _reciprocal_rank_fusion(results_lists: List[List[Tuple[Any, float]]], k: int = 60) -> List[Tuple[Any, float]]:
     """
     Performs Reciprocal Rank Fusion on a list of ranked results.
     """
@@ -143,14 +193,18 @@ def _reciprocal_rank_fusion(results_lists: List[List[tuple[Any, float]]], k: int
     for results in results_lists:
         for i, (doc, score) in enumerate(results):
             rank = i + 1
-            # Safely get chunk_id from either EmbeddedChunk or Chunk
-            if hasattr(doc, 'chunk_id'): # For Chunk objects
-                current_chunk_id = doc.chunk_id
-            elif hasattr(doc, 'chunk') and hasattr(doc.chunk, 'chunk_id'): # For EmbeddedChunk objects
-                current_chunk_id = doc.chunk.chunk_id
-            else:
-                logger.warning(f"Document object {doc} has no identifiable chunk_id. Skipping.")
-                continue
+            
+            # Use object id as fallback for chunk_id
+            try:
+                if hasattr(doc, 'chunk_id'):
+                    current_chunk_id = doc.chunk_id
+                elif hasattr(doc, 'chunk') and hasattr(doc.chunk, 'chunk_id'):
+                    current_chunk_id = doc.chunk.chunk_id
+                else:
+                    current_chunk_id = id(doc)
+            except Exception as e:
+                logger.warning(f"Could not get chunk_id for document: {e}. Using object id.")
+                current_chunk_id = id(doc)
 
             if current_chunk_id not in fused_scores:
                 fused_scores[current_chunk_id] = {"score": 0, "doc": doc}
@@ -159,7 +213,3 @@ def _reciprocal_rank_fusion(results_lists: List[List[tuple[Any, float]]], k: int
     reranked_results = sorted(fused_scores.values(), key=lambda x: x["score"], reverse=True)
 
     return [(item["doc"], item["score"]) for item in reranked_results]
-
-    
-
-    

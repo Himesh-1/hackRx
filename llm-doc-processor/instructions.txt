@@ -1,0 +1,168 @@
+Here's your content professionally formatted for clarity, readability, and actionability — ideal for sharing with engineering or product teams:
+
+---
+
+# **Project Optimization: Performance, Accuracy & Efficiency**
+
+## **1. Performance Bottlenecks & API Call Reduction**
+
+### **a. Batching and Parallelism**
+- **Current:** Each question is processed sequentially through parsing, embedding, retrieval, fusion, reranking, and answer generation, with limited `asyncio` parallelism.
+- **Problem:** Without true batching, each step (especially LLM/embedding calls) results in *N* API calls per question → high latency and cost.
+- **Solutions:**
+  - ✅ **Batch Embeddings:** Ensure all embedding models (OpenAI, Sentence-Transformers) use batched input where possible.
+  - ✅ **Batch LLM Calls:** Use batch endpoints or prompt chaining to process multiple questions in a single call (e.g., for query rewriting or answer generation).
+  - ✅ **Batch Reranking:** Leverage cross-encoder support for batch inference — pass all (query, document) pairs at once.
+
+---
+
+### **b. Reduce LLM Calls**
+- **Current:** Gemini/OpenAI called individually per question for rewriting, answering, or reranking.
+- **Impact:** High latency, cost, and rate-limit risks.
+- **Solutions:**
+  - 💾 **Cache LLM Results:** Use persistent caching (Redis, SQLite) for:
+    - Rewritten queries
+    - Generated answers
+  - 🔁 **Rewrite Once:** Avoid redundant rewrites across retrieval stages.
+  - 📦 **Answer in Bulk:** Send all questions + top contexts in a single structured prompt to the LLM.
+
+---
+
+### **c. Optimize Retrieval**
+- **Current:** Both dense (vector) and sparse (BM25) retrieval run for every question → fusion → reranking.
+- **Opportunity:** Reduce compute load downstream.
+- **Solutions:**
+  - ⬇️ **Tune `TOP_K`:** Reduce from 10 → 3–5 if accuracy allows.
+  - 🔍 **Early Filtering:** Apply lightweight filters (e.g., metadata, relevance heuristics) before expensive reranking/LLM steps.
+
+---
+
+## **2. Accuracy Improvements**
+
+### **a. Reranker Quality**
+- **Current:** Using cross-encoder reranker (good baseline).
+- **Improvement Path:**
+  - 🧠 **Model Upgrade:** Use higher-quality models (e.g., `cross-encoder/ms-marco-MiniLM-L-12-v2`, or larger variants like `xlm-r-bert-base`).
+  - 🎯 **Fine-Tuning:** If labeled relevance data exists, fine-tune on domain-specific queries/documents.
+
+---
+
+### **b. Prompt Engineering**
+- **Current:** LLM prompts used for query rewriting and answer generation.
+- **Optimization:**
+  - ✍️ **Prompt Iteration:** A/B test prompts for clarity, instruction strength, and output consistency.
+  - 📏 **Context Window Management:**
+    - Provide sufficient context (top 3–5 chunks)
+    - Avoid context overflow → truncate or summarize when needed.
+
+---
+
+## **3. System & Code Efficiency**
+
+### **a. Async and Threading**
+- **Current:** Uses `asyncio.to_thread` for concurrency.
+- **Improvement:**
+  - ⚡ **True Async I/O:** Replace sync HTTP clients with `httpx` (async) for API calls.
+  - 🧵 **ThreadPool for CPU Tasks:** Use `ThreadPoolExecutor` for CPU-heavy operations:
+    - Embedding
+    - Reranking
+    - Index search
+
+---
+
+### **b. Indexing**
+- **Current:** FAISS/BM25 indices built or loaded at startup.
+- **Optimization:**
+  - 💾 **Persistent Index Storage:** Save indices to disk; load on startup instead of rebuilding.
+  - 🗺️ **Memory Mapping:** Use `mmap` for large FAISS indices to reduce memory footprint and speed up load.
+
+---
+
+## **4. API Design**
+
+### **a. Batch Endpoint**
+- **Current:** Single endpoint accepts multiple questions but may process them sequentially.
+- **Goal:** End-to-end batching.
+- **Solution:**
+  - 🔄 Ensure **all internal steps** (embedding → retrieval → reranking → LLM) are batched during processing.
+
+---
+
+### **b. Streaming Responses (Optional)**
+- For long-running batches:
+  - 🌊 Stream partial results (e.g., one answer at a time) using SSE or WebSockets.
+  - Improves perceived performance and UX.
+
+---
+
+## **5. Monitoring & Profiling**
+
+### **Essential Observability Additions:**
+- 🕒 **Timing Logs:** Log duration per stage:
+  - Embedding
+  - Retrieval
+  - Reranking
+  - LLM call
+- 🔍 **Profiling:** Use `cProfile` or `py-spy` to identify CPU/memory bottlenecks.
+- 📊 **API Usage Tracking:** Monitor:
+  - Number of external API calls
+  - Token usage
+  - Error rates
+
+> *Example:* Currently 13 API calls for 10 questions → target: **2–3 total batched calls**.
+
+---
+
+## **6. Hardware & Deployment**
+
+### **Optimal Runtime Setup:**
+- 🟩 **GPU Acceleration:**
+  - Run embedding and reranking models on GPU (e.g., via `sentence-transformers` + CUDA).
+  - Can reduce inference time by 5–10x.
+- 🚀 **Horizontal Scaling:**
+  - Deploy with multiple workers: `uvicorn --workers 4`
+  - Enables concurrent request handling.
+
+---
+
+## **7. Summary Table**
+
+| **Area**           | **Current State**               | **Recommended Optimization**                              |
+|--------------------|----------------------------------|------------------------------------------------------------|
+| **Embedding**       | Batched                          | ✅ Keep batched; add GPU acceleration                       |
+| **Retrieval**       | Dense + Sparse                   | ⬇️ Lower `TOP_K`; add early filtering                     |
+| **Reranking**       | Cross-Encoder                    | 📦 Batch scoring; use better model; run on GPU            |
+| **LLM Calls**       | Per-question                     | 📦 Batch inputs; 💾 cache outputs; rewrite once           |
+| **API Calls**       | ~13 for 10 questions             | 🎯 Target: 2–3 batched calls                              |
+| **Response Time**   | ~4 min for 10 questions          | 🎯 Target: **<1 minute** with optimizations               |
+
+---
+
+## **8. Actionable Next Steps**
+
+✅ **Immediate Wins (Week 1):**
+1. Profile each pipeline step and log execution times.
+2. Implement batching for LLM and reranker calls.
+3. Introduce Redis/SQLite caching for LLM outputs (rewrites, answers).
+4. Reduce `TOP_K` from 10 → 5 and evaluate impact on accuracy.
+
+🚀 **Mid-Term (Week 2–3):**
+5. Move embedding/reranking to GPU.
+6. Optimize prompts and context length via A/B testing.
+7. Persist FAISS/BM25 indices to disk with mmap support.
+
+📈 **Long-Term (Ongoing):**
+8. Monitor API usage and refine cost/performance trade-offs.
+9. Collect feedback data to fine-tune reranker or LLM prompts.
+10. Consider streaming API responses for UX improvement.
+
+---
+
+**Expected Outcome:**  
+➡️ **>75% reduction in latency**  
+➡️ **>60% reduction in LLM/external API costs**  
+➡️ **Improved accuracy and system scalability**
+
+Let’s prioritize profiling and caching first — they offer the fastest ROI.
+
+--- 

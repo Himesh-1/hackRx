@@ -18,22 +18,21 @@ class SparseRetriever:
     A sparse retriever that uses the BM25 algorithm to find relevant documents.
     """
 
-    def __init__(self, chunks: List[Chunk]):
+    def __init__(self, corpus: List[str]):
         """
         Initializes the SparseRetriever.
 
         Args:
-            chunks (List[Chunk]): The list of chunks to be indexed.
+            corpus (List[str]): A list of document contents to be indexed.
         """
-        if not chunks:
-            raise ValueError("Cannot initialize SparseRetriever with an empty list of chunks.")
+        if not corpus:
+            raise ValueError("Cannot initialize SparseRetriever with an empty corpus.")
 
-        self.chunks = chunks
-        self.corpus = [chunk.content for chunk in chunks]
+        self.corpus = corpus
         self.tokenized_corpus = [doc.split(" ") for doc in self.corpus]
         self.bm25 = BM25Okapi(self.tokenized_corpus)
 
-    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 10) -> List[Tuple[Chunk, float]]:
+    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 15) -> List[Tuple[str, float]]:
         """
         Retrieve the most relevant document chunks for a given parsed query.
 
@@ -42,7 +41,7 @@ class SparseRetriever:
             top_k: The number of top chunks to retrieve.
 
         Returns:
-            A list of tuples, where each tuple contains a Chunk and its retrieval score.
+            A list of tuples, where each tuple contains a chunk content and its retrieval score.
         """
         logger.info(f"Retrieving top {top_k} chunks for query: '{parsed_query.original_query}'")
 
@@ -51,7 +50,7 @@ class SparseRetriever:
 
         top_n_indices = sorted(range(len(doc_scores)), key=lambda i: doc_scores[i], reverse=True)[:top_k]
 
-        results = [(self.chunks[i], doc_scores[i]) for i in top_n_indices]
+        results = [(self.corpus[i], doc_scores[i]) for i in top_n_indices]
 
         logger.info(f"Retrieved {len(results)} relevant chunks.")
         return results

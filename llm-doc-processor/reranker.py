@@ -1,4 +1,3 @@
-
 """
 Re-ranker Module
 
@@ -11,9 +10,9 @@ significant improvement in answer quality.
 import logging
 from typing import List, Tuple, Union
 from sentence_transformers import CrossEncoder
+from query_parser import ParsedQuery
 from embedder import EmbeddedChunk
 from chunker import Chunk
-from query_parser import ParsedQuery
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +24,7 @@ class ReRanker:
     of retrieved document chunks.
     """
 
-    def __init__(self, model_name: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2'):
+    def __init__(self, model_name: str = 'cross-encoder/ms-marco-MiniLM-L-12-v2'):
         """
         Initializes the ReRanker.
 
@@ -40,47 +39,48 @@ class ReRanker:
             logger.error(f"Failed to load Cross-Encoder model: {e}", exc_info=True)
             raise
 
-    def rerank(self, parsed_query: ParsedQuery, chunks: List[tuple[Union[EmbeddedChunk, Chunk], float]], top_n: int = 7) -> List[tuple[Union[EmbeddedChunk, Chunk], float]]:
+    def rerank(self, parsed_query: ParsedQuery, chunks_with_scores: List[Tuple[Union[EmbeddedChunk, Chunk], float]], top_n: int = 7) -> List[Tuple[Union[EmbeddedChunk, Chunk], float]]:
         """
         Re-ranks a list of retrieved chunks based on their relevance to the query.
 
         Args:
             parsed_query (ParsedQuery): The user's parsed query.
-            chunks (List[Tuple[EmbeddedChunk, float]]): The list of chunks from the initial retrieval.
+            chunks_with_scores (List[Tuple[Union[EmbeddedChunk, Chunk], float]]): 
+                The list of chunks (with their initial scores) from the initial retrieval.
             top_n (int): The number of top chunks to return after re-ranking.
 
         Returns:
             A new list of chunks, sorted by their re-ranked relevance score.
         """
-        if not chunks:
+        if not chunks_with_scores:
             return []
 
-        logger.info(f"Re-ranking {len(chunks)} chunks for query: '{parsed_query.original_query}'")
+        logger.info(f"Re-ranking {len(chunks_with_scores)} chunks for query: '{parsed_query.original_query}'")
+
+        # Extract chunk content for the Cross-Encoder model
+        chunk_contents = []
+        for chunk_obj, _ in chunks_with_scores:
+            if isinstance(chunk_obj, EmbeddedChunk):
+                chunk_contents.append(chunk_obj.chunk.content)
+            elif isinstance(chunk_obj, Chunk):
+                chunk_contents.append(chunk_obj.content)
+            else:
+                logger.warning(f"Unsupported chunk type encountered during re-ranking: {type(chunk_obj)}")
+                continue
 
         # Create pairs of [query, chunk_content] for the model
-        query_chunk_pairs = []
-        for chunk_tuple in chunks:
-            chunk_obj = chunk_tuple[0]
-            if isinstance(chunk_obj, EmbeddedChunk):
-                content = chunk_obj.chunk.content
-            elif isinstance(chunk_obj, Chunk):
-                content = chunk_obj.content
-            else:
-                raise TypeError(f"Unsupported chunk type: {type(chunk_obj)}")
-            query_chunk_pairs.append([parsed_query.original_query, content])
+        query_chunk_pairs = [[parsed_query.original_query, content] for content in chunk_contents]
 
         # Get the scores from the Cross-Encoder model
         scores = self.model.predict(query_chunk_pairs)
 
-        # Add the new scores to the chunks
-        for i in range(len(chunks)):
-            # The new tuple will be (EmbeddedChunk, new_score)
-            chunks[i] = (chunks[i][0], scores[i])
+        # Combine original chunk objects with their new scores
+        reranked_chunks = []
+        for i, (chunk_obj, original_score) in enumerate(chunks_with_scores):
+            reranked_chunks.append((chunk_obj, scores[i]))
 
         # Sort the chunks by the new score in descending order
-        chunks.sort(key=lambda x: x[1], reverse=True)
+        reranked_chunks.sort(key=lambda x: x[1], reverse=True)
 
         logger.info(f"Re-ranking complete. Returning top {top_n} chunks.")
-        return chunks[:top_n]
-
-    
+        return reranked_chunks[:top_n]

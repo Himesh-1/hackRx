@@ -1,4 +1,3 @@
-
 """
 Retriever Module
 Retrieves relevant document chunks based on a query using a vector index.
@@ -8,7 +7,7 @@ import faiss
 import numpy as np
 import logging
 from typing import List, Tuple
-from embedder import EmbeddedChunk, DocumentEmbedder
+from embedder import EmbeddedChunk
 from query_parser import ParsedQuery
 
 # Configure logging
@@ -20,30 +19,24 @@ class Retriever:
     Retrieves relevant document chunks using a FAISS vector index.
     """
 
-    def __init__(self, embedder: DocumentEmbedder, embedded_chunks: List[EmbeddedChunk]):
+    def __init__(self, embedded_chunks: List[EmbeddedChunk]):
         """
         Initialize the Retriever.
 
         Args:
-            embedder: An instance of DocumentEmbedder.
             embedded_chunks: A list of EmbeddedChunk objects to be indexed.
         """
         if not embedded_chunks:
             raise ValueError("Cannot initialize Retriever with an empty list of embedded chunks.")
 
-        self.embedder = embedder
         self.embedded_chunks = embedded_chunks
-        self.index = None
+        self._build_index()
 
     def _build_index(self):
         """
         Builds the FAISS index from the embedded chunks.
         The index is an IndexFlatIP, suitable for inner product (cosine similarity) search.
-        Only builds the index if it hasn't been built yet.
         """
-        if self.index is not None:
-            return # Index already built
-
         logger.info("Building FAISS index...")
         embedding_dim = self.embedded_chunks[0].embedding_dim
         self.index = faiss.IndexFlatIP(embedding_dim)  # Using Inner Product for cosine similarity
@@ -54,7 +47,7 @@ class Retriever:
 
         logger.info(f"FAISS index built successfully with {self.index.ntotal} vectors.")
 
-    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 10, query_embedding: np.ndarray = None) -> List[Tuple[EmbeddedChunk, float]]:
+    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 15, query_embedding: np.ndarray = None) -> List[Tuple[EmbeddedChunk, float]]:
         """
         Retrieve the most relevant document chunks for a given parsed query using a pre-computed embedding.
 
@@ -68,10 +61,11 @@ class Retriever:
         """
         logger.info(f"Retrieving top {top_k} chunks for query: '{parsed_query.original_query}'")
 
-        self._build_index() # Ensure index is built before retrieval
+        if self.index is None:
+            logger.error("CRITICAL: FAISS index is not built.")
+            raise RuntimeError("FAISS index must be built before retrieval.")
 
         if query_embedding is None:
-            # This should not happen in the main workflow, but is a safeguard.
             logger.error("CRITICAL: No pre-computed query embedding provided to retrieve method.")
             raise ValueError("A pre-computed query embedding is required for retrieval.")
         
@@ -91,69 +85,3 @@ class Retriever:
 
         logger.info(f"Retrieved {len(results)} relevant chunks.")
         return results
-
-# Example usage (for testing purposes)
-if __name__ == '__main__':
-    from loader import DocumentLoader
-    from chunker import DocumentChunker
-
-    # This is a simplified example flow for testing the retriever
-    # In a real application, these components would be managed by a central orchestrator.
-
-    # 1. Load documents
-    loader = DocumentLoader("docs/")
-    documents = loader.load_all_documents()
-
-    if not documents:
-        logger.warning("No documents found in 'docs/' directory. Please add some for testing.")
-    else:
-        # 2. Chunk documents
-        chunker = DocumentChunker()
-        chunks = chunker.chunk_documents(documents)
-
-        # 3. Embed chunks
-        # Using a mock embedder for this example to avoid dependency on API keys or large models
-        class MockEmbedder(DocumentEmbedder):
-            def __init__(self, model_name: str = "mock-model", dim: int = 384):
-                self.model_name = model_name
-                self.embedding_dim = dim
-            def embed_chunks(self, chunks: List) -> List[EmbeddedChunk]:
-                # Generate random embeddings for testing
-                return [
-                    EmbeddedChunk(
-                        chunk=c,
-                        embedding=np.random.rand(self.embedding_dim).astype('float32'),
-                        embedding_model=self.model_name,
-                        embedding_dim=self.embedding_dim
-                    ) for c in chunks
-                ]
-            def embed_query(self, query: str) -> np.ndarray:
-                return np.random.rand(self.embedding_dim).astype('float32')
-
-        embedder = MockEmbedder()
-        embedded_chunks = embedder.embed_chunks(chunks)
-
-        # 4. Initialize Retriever
-        retriever = Retriever(embedder, embedded_chunks)
-
-        # 5. Create a mock parsed query
-        mock_parsed_query = ParsedQuery(
-            original_query="Is knee surgery covered?",
-            enhanced_query="knee surgery coverage policy claim",
-            entities={'procedure': 'knee surgery'},
-            intent='claim_inquiry',
-            keywords=['knee', 'surgery', 'coverage'],
-            confidence=0.9
-        )
-
-        # 6. Retrieve relevant chunks
-        retrieved_results = retriever.retrieve(mock_parsed_query, top_k=3)
-
-        print("Retrieval Test Results ---")
-        print(f"Query: '{mock_parsed_query.original_query}'")
-        print(f"Found {len(retrieved_results)} results:")
-
-        for chunk, score in retrieved_results:
-            print(f"Score: {score:.4f}")
-            print(f"  Source: {chunk.chunk.source_document} (Chunk ID: {chunk.chunk.chunk_id})")
-            print(f"  Content: {chunk.chunk.content[:150]}...")

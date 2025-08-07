@@ -14,7 +14,14 @@ from typing import List, Dict, Any, Tuple
 import google.generativeai as genai
 from query_parser import ParsedQuery
 from embedder import EmbeddedChunk
+from chunker import Chunk # Import Chunk to handle both types
 from datetime import datetime
+from dotenv import load_dotenv
+from utils.cache_utils import get_cache, set_cache, delete_cache # Import cache utilities
+import hashlib # Import hashlib for cache key generation
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,7 +39,7 @@ class DecisionEngine:
     and formats the output in a structured JSON format.
     """
 
-    def __init__(self, model_name: str = "gemini-1.5-flash", temperature: float = 0.0, max_prompt_tokens: int = 128000):
+    def __init__(self, model_name: str = "gemini-1.5-flash", temperature: float = 0.0, max_prompt_tokens: int = 256000):
         """
         Initializes the Decision Engine.
 
@@ -44,89 +51,139 @@ class DecisionEngine:
         self.model_name = model_name
         self.temperature = temperature
         self.max_prompt_tokens = max_prompt_tokens
-        self.api_key = os.getenv("GEMINI_API_KEY")
-        if not self.api_key:
-            raise ValueError("GEMINI_API_KEY environment variable not set.")
-        genai.configure(api_key=self.api_key)
+        self.api_keys = [key.strip() for key in os.getenv("GEMINI_API_KEYS", "").split(',') if key.strip()]
+        if not self.api_keys:
+            raise ValueError("GEMINI_API_KEYS environment variable not set or is empty.")
+        self.current_key_index = 0
+        genai.configure(api_key=self.api_keys[self.current_key_index])
         self.model = genai.GenerativeModel(self.model_name)
+        self.prompt_template_path = os.getenv("LLM_PROMPT_TEMPLATE", "prompts/decision_prompt.txt")
+        self._load_prompt_template()
 
-    
+    def _load_prompt_template(self):
+        """Loads the prompt template from a file."""
+        try:
+            with open(self.prompt_template_path, 'r', encoding='utf-8') as f:
+                self.base_prompt_template = f.read()
+            logger.info(f"Loaded prompt template from {self.prompt_template_path}")
+        except FileNotFoundError:
+            logger.error(f"Prompt template file not found: {self.prompt_template_path}")
+            raise
+        except Exception as e:
+            logger.error(f"Error loading prompt template: {e}")
+            raise
 
-    
-
-
-
-
-
-    def _call_gemini_with_retry(self, prompt: str, max_retries: int = 5, initial_delay: float = 1.0):
+    def _call_gemini_with_retry(self, prompt: str, max_retries: int = int(os.getenv("LLM_MAX_RETRIES", 7)), initial_delay: float = 1.0):
         """
         Calls the Gemini API with retry logic and exponential backoff.
         """
         for i in range(max_retries):
             try:
-                logger.info(f"Attempt {i+1}/{max_retries} to call Gemini API.")
-                response = self.model.generate_content(prompt)
+                # Configure with the current API key before each attempt
+                genai.configure(api_key=self.api_keys[self.current_key_index])
+                logger.info(f"Attempt {i+1}/{max_retries} with key index {self.current_key_index} to call Gemini API.")
+                response = self.model.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=self.temperature,
+                        max_output_tokens=int(os.getenv("LLM_MAX_OUTPUT_TOKENS", 2048)) # Increased default for full JSON
+                    )
+                )
                 return response
             except Exception as e:
                 logger.error(f"Gemini API call failed (Attempt {i+1}/{max_retries}): {e}")
                 if "rate limit" in str(e).lower() or "resource exhausted" in str(e).lower() or "quota" in str(e).lower():
+                    logger.warning("Rate limit hit. Attempting to switch API key.")
+                    self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+                    logger.warning(f"Switched to key index: {self.current_key_index}")
                     delay = initial_delay * (2 ** i) # Exponential backoff
-                    logger.warning(f"Rate limit hit. Retrying in {delay:.2f} seconds... (Attempt {i+1}/{max_retries})")
+                    logger.warning(f"Retrying in {delay:.2f} seconds... (Attempt {i+1}/{max_retries})")
                     time.sleep(delay)
                 else:
                     raise # Re-raise other exceptions
-        raise Exception(f"Failed to get a response from Gemini API after {max_retries} retries due to rate limit.")
+        raise Exception(f"Failed to get a response from Gemini API after {max_retries} retries across all keys due to rate limit or other persistent error.")
 
     def make_decisions_batch(self, processed_questions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Makes a single, batched decision for a list of questions with smart context stuffing.
+        Returns a dictionary with a list of answer strings.
         """
         logger.info(f"Making batched decision for {len(processed_questions)} questions.")
-        prompt = self._construct_batch_prompt(processed_questions)
         
-        if not prompt:
-            return {"error": "Failed to construct a valid prompt from the provided context."}
+        all_answers = []
+        llm_batch_size = int(os.getenv("LLM_BATCH_SIZE", 5)) # Default to 5 questions per LLM call
+        key_switch_interval = int(os.getenv("KEY_SWITCH_INTERVAL", 10)) # Switch key after 10 questions
+        questions_processed_in_session = 0
 
-        final_token_estimate = _estimate_tokens(prompt)
-        logger.info(f"Final prompt token estimate: {final_token_estimate}")
+        for i in range(0, len(processed_questions), llm_batch_size):
+            batch_questions = processed_questions[i:i + llm_batch_size]
+            logger.info(f"Processing batch of {len(batch_questions)} questions (questions {i+1} to {min(i+llm_batch_size, len(processed_questions))}).")
 
-        if final_token_estimate > self.max_prompt_tokens:
-            logger.error(f"FATAL: Prompt size ({final_token_estimate}) exceeds max limit ({self.max_prompt_tokens}). Aborting API call.")
-            return {"error": "Internal error: Prompt construction failed token validation."}
+            # Proactive key rotation
+            if questions_processed_in_session >= key_switch_interval:
+                self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+                logger.info(f"Proactively switched to API key index: {self.current_key_index}")
+                questions_processed_in_session = 0 # Reset counter for new key
 
-        try:
-            response = self._call_gemini_with_retry(prompt)
-            logger.info(f"LLM raw response: {response.text!r}")
-            return self._parse_llm_batch_response(response.text)
-        except Exception as e:
-            logger.error(f"Error during LLM API call: {e}", exc_info=True)
-            return {"error": "Failed to get a response from the language model.", "details": str(e)}
+            prompt = self._construct_batch_prompt(batch_questions)
+            
+            if not prompt:
+                # If prompt construction fails for a batch, append errors for these questions
+                all_answers.extend(["Error: Failed to construct prompt for this batch."] * len(batch_questions))
+                continue
+
+            # Generate a cache key from the prompt
+            cache_key = hashlib.md5(prompt.encode('utf-8')).hexdigest()
+            cached_response = get_cache(cache_key)
+            if cached_response:
+                # Validate cached response structure
+                if isinstance(cached_response, dict) and isinstance(cached_response.get("answers"), list):
+                    # Further validate that all items in 'answers' are strings
+                    if all(isinstance(ans, str) for ans in cached_response["answers"]):
+                        logger.info(f"Returning valid cached LLM response for prompt hash: {cache_key}")
+                        all_answers.extend(cached_response["answers"])
+                        questions_processed_in_session += len(batch_questions)
+                        continue
+                    else:
+                        logger.warning(f"Cached response for {cache_key} contains non-string answers. Deleting cache and re-generating.")
+                        delete_cache(cache_key)
+                else:
+                    logger.warning(f"Cached response for {cache_key} is not a valid dict/list. Deleting cache and re-generating.")
+                    delete_cache(cache_key)
+
+            final_token_estimate = _estimate_tokens(prompt)
+            logger.info(f"Final prompt token estimate for batch: {final_token_estimate}")
+
+            if final_token_estimate > self.max_prompt_tokens:
+                logger.error(f"FATAL: Prompt size ({final_token_estimate}) exceeds max limit ({self.max_prompt_tokens}). Skipping batch.")
+                all_answers.extend(["Error: Prompt too large for LLM."] * len(batch_questions))
+                continue
+
+            try:
+                response = self._call_gemini_with_retry(prompt)
+                logger.info(f"LLM raw response for batch: {response.text!r}")
+                parsed_response = self._parse_llm_batch_response(response.text)
+                
+                if "answers" in parsed_response and isinstance(parsed_response["answers"], list):
+                    set_cache(cache_key, parsed_response) # Cache the successful response
+                    all_answers.extend(parsed_response["answers"])
+                    questions_processed_in_session += len(batch_questions)
+                else:
+                    logger.error(f"LLM response for batch did not contain expected 'answers' list or was malformed: {parsed_response}")
+                    all_answers.extend(["Error: LLM did not return answers in the expected format."] * len(batch_questions))
+
+            except Exception as e:
+                logger.error(f"Error during LLM API call or response parsing for batch: {e}", exc_info=True)
+                all_answers.extend([f"Error: Failed to get response from LLM ({str(e)})." ] * len(batch_questions))
+        
+        return {"answers": all_answers}
 
     def _construct_batch_prompt(self, processed_questions: List[Dict[str, Any]]) -> str:
-        """Constructs a single, detailed prompt for a batch of questions with token-aware context stuffing and Chain-of-Thought reasoning."""
-        base_prompt_template = """You are an AI Insurance Policy Expert. Your task is to provide clear and accurate answers to a list of questions based *only* on the provided document excerpts. For each question, synthesize the information from the relevant clauses to form a concise answer. If the answer to any question is not found in the provided text, respond with "Information not found in the document." for that specific question.
-
-**Output Format:**
-Your final output *must* be a single, valid JSON object. This object must contain a single key, "answers", which is a list of strings. Each string in the list should be the synthesized answer to the corresponding question, in the order they were presented.
-
-**Example JSON Output:**
-```json
-{{
-  "answers": [
-    "Answer to the first question based on extracted sentences.",
-    "Answer to the second question based on extracted sentences."
-  ]
-}}
-```
-
----
-
-{questions_block}
-
----
-
-Now, provide the final answers in the specified JSON format.
-"""
+        """
+        Constructs a single, detailed prompt for a batch of questions with token-aware context stuffing and Chain-of-Thought reasoning.
+        """
+        # Use the loaded base prompt template
+        base_prompt_template = self.base_prompt_template
         
         questions_with_context = []
         # Account for the tokens in the template, minus the placeholder itself.
@@ -149,20 +206,37 @@ Now, provide the final answers in the specified JSON format.
 
             current_tokens += question_tokens
             context_for_question = []
-            max_chunks_per_question = 3 # Hard limit to reduce token count
+            max_chunks_per_question = 5 # Increased hard limit to allow more context
             chunks_added = 0
 
-            for chunk, score in item['context']:
+            for idx, chunk_obj in enumerate(item['context']):
                 if chunks_added >= max_chunks_per_question:
                     logger.info(f"Reached max chunks ({max_chunks_per_question}) for this question. Skipping further chunks.")
                     break
 
-                actual_chunk = chunk[0] # Get the actual chunk object from the tuple
-                source = actual_chunk.source_document
-                content = actual_chunk.content
-                chunk_str = f"--- Chunk from {source} (Score: {score:.2f}) --- {content}"
+                # Extract content and source information for the prompt
+                content = ""
+                source_info = ""
+                if isinstance(chunk_obj, EmbeddedChunk):
+                    content = chunk_obj.chunk.content
+                    source_info = f"Source: {chunk_obj.chunk.source_document}"
+                    if chunk_obj.chunk.metadata and "page_number" in chunk_obj.chunk.metadata:
+                        source_info += f" (Page: {chunk_obj.chunk.metadata['page_number']})"
+                    elif chunk_obj.chunk.metadata and "section_title" in chunk_obj.chunk.metadata:
+                        source_info += f" (Section: {chunk_obj.chunk.metadata['section_title']})"
+                elif isinstance(chunk_obj, Chunk):
+                    content = chunk_obj.content
+                    source_info = f"Source: {chunk_obj.source_document}"
+                    if chunk_obj.metadata and "page_number" in chunk_obj.metadata:
+                        source_info += f" (Page: {chunk_obj.metadata['page_number']})"
+                    elif chunk_obj.metadata and "section_title" in chunk_obj.metadata:
+                        source_info += f" (Section: {chunk_obj.metadata['section_title']})"
+                else:
+                    logger.warning(f"Unknown chunk object type in _construct_batch_prompt: {type(chunk_obj)}")
+                    content = str(chunk_obj)
+                    source_info = "Source: Unknown"
 
-
+                chunk_str = f"[Clause {idx+1}] {source_info} - {content}"
 
                 chunk_tokens = _estimate_tokens(chunk_str)
                 if current_tokens + chunk_tokens <= self.max_prompt_tokens:
@@ -174,6 +248,7 @@ Now, provide the final answers in the specified JSON format.
                     break
             
             questions_with_context.append(question_str + "".join(context_for_question))
+            logger.debug(f"Context for Question {i+1}:\n{"".join(context_for_question)}")
 
         if not questions_with_context:
             logger.error("Could not construct any questions within the token limit.")
@@ -183,23 +258,35 @@ Now, provide the final answers in the specified JSON format.
         return base_prompt_template.format(questions_block=all_questions_block)
 
     def _parse_llm_batch_response(self, response_text: str) -> Dict[str, Any]:
-        """Parses the LLM's response to extract the structured JSON object with a list of answers."""
+        """
+        Parses the LLM's response to extract the structured JSON object with a list of answers.
+        Expected format: { "answers": ["Answer 1", "Answer 2", ...] }
+        """
         try:
-            # Find the JSON block within the markdown
-            json_match = re.search(r'```json\n({.*?})\n```', response_text, re.DOTALL)
-            if not json_match:
-                json_match = re.search(r'({.*?})', response_text, re.DOTALL)
-
+            # Attempt to find JSON block wrapped in ```json ... ```
+            json_match = re.search(r'```json\n(.*?)\n```', response_text, re.DOTALL)
             if json_match:
-                json_str = json_match.group(1).strip() # Clean the extracted JSON string
-                decision = json.loads(json_str)
-                if isinstance(decision.get('answers'), list):
-                    logger.info(f"Successfully parsed {len(decision['answers'])} answers from batched response.")
-                    return decision
-                else:
-                    raise json.JSONDecodeError("'answers' key is not a list.", json_str, 0)
+                json_str = json_match.group(1).strip()
             else:
-                raise ValueError("Could not find a JSON block in the LLM response.")
+                # If not found, attempt to find a standalone JSON object
+                json_match = re.search(r'({.*})', response_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0).strip() # Use group(0) to get the whole matched string
+                else:
+                    raise ValueError("Could not find a JSON block in the LLM response.")
+
+            decision = json.loads(json_str)
+            
+            # Validate the structure: expect a dict with an 'answers' key which is a list of strings
+            if isinstance(decision, dict) and isinstance(decision.get('answers'), list):
+                # Further validate each item in the 'answers' list is a string
+                for ans_item in decision['answers']:
+                    if not isinstance(ans_item, str):
+                        raise json.JSONDecodeError("Each answer in 'answers' list must be a string.", json_str, 0)
+                logger.info(f"Successfully parsed {len(decision['answers'])} structured answers from batched response.")
+                return decision
+            else:
+                raise json.JSONDecodeError("Expected a JSON object with an 'answers' key containing a list of strings.", json_str, 0)
         except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to parse valid JSON from LLM batch response: {e}")
+            logger.error(f"Failed to parse valid JSON from LLM batch response: {e}. Raw response: {response_text!r}")
             return {"error": "Could not parse LLM response.", "details": response_text}

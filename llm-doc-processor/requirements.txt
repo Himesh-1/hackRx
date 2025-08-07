@@ -11,3 +11,7 @@ PyMuPDF
 python-docx
 extract-msg
 openai
+pyngrok
+requests
+scikit-learn
+httpx

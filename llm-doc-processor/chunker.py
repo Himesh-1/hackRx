@@ -32,8 +32,8 @@ class DocumentChunker:
     """
     
     def __init__(self,
-                 chunk_size: int = 1024,
-                 overlap_size: int = 200,
+                 chunk_size: int = 2240, # Approximately 560 tokens (changed from 1600 to 2240)
+                 overlap_size: int = 400, # Approximately 25% overlap
                  min_chunk_size: int = 100,
                  chunking_strategy: str = "hybrid"):
         """
@@ -369,7 +369,7 @@ class DocumentChunker:
                             metadata['policy_metadata']['age_limits'] = age_limits
                     
                     chunks.append(Chunk(
-                        content=current_chunk_content.strip(),
+                        content=f"{title}. {current_chunk_content.strip()}",
                         chunk_id=f"{document.filename}_{chunk_index}",
                         source_document=document.filename,
                         chunk_index=chunk_index,
@@ -397,7 +397,7 @@ class DocumentChunker:
                     "policy_metadata": {}
                 }
                 chunks.append(Chunk(
-                    content=current_chunk_content.strip(),
+                    content=f"{title}. {current_chunk_content.strip()}",
                     chunk_id=f"{document.filename}_{chunk_index}",
                     source_document=document.filename,
                     chunk_index=chunk_index,
@@ -537,7 +537,7 @@ class DocumentChunker:
                 metadata['policy_metadata']['procedure_types'] = procedure_types
             
             chunk = Chunk(
-                content=section_content.strip(),
+                content=f"{section_title}. {section_content.strip()}",
                 chunk_id=f"{document.filename}_s{section_idx}_0",
                 source_document=document.filename,
                 chunk_index=section_idx * 1000,  # Leave room for sub-chunks

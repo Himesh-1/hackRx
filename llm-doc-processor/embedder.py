@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass, asdict
 import openai
 from sentence_transformers import SentenceTransformer
+from sklearn.preprocessing import normalize
 from chunker import Chunk
 
 # Configure logging
@@ -71,6 +72,9 @@ class DocumentEmbedder:
             cache_dir: Directory to cache embeddings
             batch_size: Batch size for processing chunks
         """
+        if embedding_provider == "openai" and model_name == "all-MiniLM-L6-v2":
+            model_name = "text-embedding-ada-002" # Default for OpenAI
+
         self.model_name = model_name
         self.embedding_provider = embedding_provider
         self.cache_dir = Path(cache_dir)
@@ -153,6 +157,9 @@ class DocumentEmbedder:
                 elif self.embedding_provider == "openai":
                     embeddings = self._get_openai_embeddings(batch_texts)
                 
+                # Normalize embeddings
+                embeddings = normalize(embeddings)
+
                 for chunk, embedding in zip(new_chunks, embeddings):
                     embedded_chunk = EmbeddedChunk(
                         chunk=chunk,
@@ -238,6 +245,9 @@ class DocumentEmbedder:
             elif self.embedding_provider == "openai":
                 embeddings = self._get_openai_embeddings(queries)
             
+            # Normalize embeddings
+            embeddings = normalize(embeddings)
+
             return list(embeddings)
 
         except Exception as e:
