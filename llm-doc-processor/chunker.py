@@ -9,6 +9,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from loader import Document
+import spacy
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -49,6 +50,13 @@ class DocumentChunker:
         self.overlap_size = overlap_size
         self.min_chunk_size = min_chunk_size
         self.chunking_strategy = chunking_strategy
+        try:
+            self.nlp = spacy.load("en_core_web_sm")
+        except OSError:
+            logger.info("Spacy model not found, downloading...")
+            from spacy.cli import download
+            download("en_core_web_sm")
+            self.nlp = spacy.load("en_core_web_sm")
         
         # Enhanced patterns for insurance policy document chunking
         self.section_patterns = [
@@ -311,100 +319,51 @@ class DocumentChunker:
         """
         text = document.content
         chunks = []
+        doc = self.nlp(text)
+        sentences = [sent.text for sent in doc.sents]
         
-        # First, split by major sections
-        sections = self._identify_sections(text)
-        
-        # If no standard sections found, try to identify insurance-specific blocks
-        if not sections:
-            insurance_blocks = self._identify_insurance_blocks(text)
-            if insurance_blocks:
-                sections = insurance_blocks
-            else:
-                sections = [(0, len(text), "Full Document")]
-                
-        # Process each section
         chunk_index = 0
-        for start, end, title in sections:
-            section_text = text[start:end]
-            
-            # Further split section by paragraphs and lists
-            elements = re.split(r'(\n\s*\n)', section_text) # Split by blank lines
-            
-            current_chunk_content = ""
-            current_chunk_start = start
+        current_chunk_content = ""
+        current_chunk_start = 0
 
-            for i in range(0, len(elements), 2):
-                element = elements[i]
-                if not element.strip():
-                    continue
-
-                if len(current_chunk_content) + len(element) > self.chunk_size and current_chunk_content:
-                    # Create chunk with insurance-specific metadata
-                    metadata = {
-                        "chunking_strategy": "hybrid",
-                        "section_title": title,
-                        "original_file_type": document.file_type,
-                        "policy_metadata": {}
-                    }
-                    
-                    # Extract insurance metadata from the chunk content
-                    if any(term in current_chunk_content.lower() for term in ['waiting period', 'coverage', 'limit', 'age']):
-                        # Extract waiting periods
-                        waiting_matches = re.finditer(self.metadata_patterns['waiting_period'], current_chunk_content, re.IGNORECASE)
-                        waiting_periods = [(int(m.group(1)), m.group(0)) for m in waiting_matches]
-                        if waiting_periods:
-                            metadata['policy_metadata']['waiting_periods'] = waiting_periods
-                        
-                        # Extract coverage limits
-                        coverage_matches = re.finditer(self.metadata_patterns['coverage_limit'], current_chunk_content, re.IGNORECASE)
-                        coverage_limits = [(int(m.group(1).replace(',', '')), m.group(0)) for m in coverage_matches]
-                        if coverage_limits:
-                            metadata['policy_metadata']['coverage_limits'] = coverage_limits
-                        
-                        # Extract age limits
-                        age_matches = re.finditer(self.metadata_patterns['age_limit'], current_chunk_content, re.IGNORECASE)
-                        age_limits = [(m.group(1), m.group(2) if m.group(2) else None, m.group(0)) for m in age_matches]
-                        if age_limits:
-                            metadata['policy_metadata']['age_limits'] = age_limits
-                    
-                    chunks.append(Chunk(
-                        content=f"{title}. {current_chunk_content.strip()}",
-                        chunk_id=f"{document.filename}_{chunk_index}",
-                        source_document=document.filename,
-                        chunk_index=chunk_index,
-                        start_char=current_chunk_start,
-                        end_char=current_chunk_start + len(current_chunk_content),
-                        metadata=metadata
-                    ))
-                    chunk_index += 1
-                    
-                    # Start new chunk with overlap
-                    overlap_text = self._get_sentence_overlap(current_chunk_content)
-                    current_chunk_content = overlap_text + "\n\n" + element
-                    current_chunk_start += len(current_chunk_content) - len(overlap_text) - len(element) - 4
-                else:
-                    if not current_chunk_content:
-                        current_chunk_start = start + section_text.find(element)
-                    current_chunk_content += element + "\n\n"
-
-            # Add the last remaining chunk if it exists
-            if current_chunk_content.strip() and len(current_chunk_content.strip()) >= self.min_chunk_size:
-                metadata = {
-                    "chunking_strategy": "hybrid",
-                    "section_title": title,
-                    "original_file_type": document.file_type,
-                    "policy_metadata": {}
-                }
+        for i, sentence in enumerate(sentences):
+            if len(current_chunk_content) + len(sentence) > self.chunk_size and current_chunk_content:
                 chunks.append(Chunk(
-                    content=f"{title}. {current_chunk_content.strip()}",
+                    content=current_chunk_content.strip(),
                     chunk_id=f"{document.filename}_{chunk_index}",
                     source_document=document.filename,
                     chunk_index=chunk_index,
                     start_char=current_chunk_start,
                     end_char=current_chunk_start + len(current_chunk_content),
-                    metadata=metadata
+                    metadata={
+                        "chunking_strategy": "hybrid",
+                        "original_file_type": document.file_type
+                    }
                 ))
+                chunk_index += 1
+                
+                # Start new chunk with overlap
+                overlap_sentences = sentences[max(0, i - 2):i]
+                current_chunk_content = " ".join(overlap_sentences) + " " + sentence
+                current_chunk_start += len(current_chunk_content) - len(" ".join(overlap_sentences)) -1
+            else:
+                if not current_chunk_content:
+                    current_chunk_start = text.find(sentence)
+                current_chunk_content += " " + sentence
+
+        if current_chunk_content.strip() and len(current_chunk_content.strip()) >= self.min_chunk_size:
+            chunks.append(Chunk(
+                content=current_chunk_content.strip(),
+                chunk_id=f"{document.filename}_{chunk_index}",
+                source_document=document.filename,
+                chunk_index=chunk_index,
+                start_char=current_chunk_start,
+                end_char=current_chunk_start + len(current_chunk_content),
+                metadata={
+                    "chunking_strategy": "hybrid",
+                    "original_file_type": document.file_type
+                }
+            ))
         
         return chunks
 

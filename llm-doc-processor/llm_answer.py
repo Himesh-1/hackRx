@@ -206,7 +206,7 @@ class DecisionEngine:
 
             current_tokens += question_tokens
             context_for_question = []
-            max_chunks_per_question = 5 # Increased hard limit to allow more context
+            max_chunks_per_question = 15 # Increased hard limit to allow more context
             chunks_added = 0
 
             for idx, chunk_obj in enumerate(item['context']):

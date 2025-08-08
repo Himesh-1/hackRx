@@ -65,8 +65,8 @@ async def process_query(request_data: HackRxRequest, request: Request):
         reranker = ReRanker()
         decision_engine = DecisionEngine()
 
-        top_k = int(os.getenv("TOP_K", 5))
-        rerank_top_n = 5
+        top_k = int(os.getenv("TOP_K", 20))
+        rerank_top_n = 10
 
         all_questions = request_data.questions
         query_parser_instance = QueryParser() # Instantiate QueryParser
@@ -94,16 +94,7 @@ async def process_query(request_data: HackRxRequest, request: Request):
         retrieval_end = time.time()
         logger.info(f"Step 5a: Retrieval (Dense + Sparse) took {retrieval_end - retrieval_start:.2f} seconds")
 
-        similarity_threshold = float(os.getenv("SIMILARITY_THRESHOLD", 0.6))
-
-        # Filter dense results by similarity threshold
-        filter_start = time.time()
-        filtered_dense_results = []
-        for res_list in dense_results:
-            filtered_list = [(doc, score) for doc, score in res_list if score >= similarity_threshold]
-            filtered_dense_results.append(filtered_list)
-        filter_end = time.time()
-        logger.info(f"Step 5b: Filtering Dense Results took {filter_end - filter_start:.2f} seconds")
+        
         
         # Note: For sparse results (BM25), a direct similarity threshold like 0.6 might not be directly applicable
         # as BM25 scores are not normalized like cosine similarity. We'll keep them as is for now,
@@ -112,7 +103,7 @@ async def process_query(request_data: HackRxRequest, request: Request):
         # Fuse the results
         fuse_start = time.time()
         fused_results = []
-        for dense_res, sparse_res in zip(filtered_dense_results, sparse_results):
+        for dense_res, sparse_res in zip(dense_results, sparse_results):
             # Convert sparse results to the same format as dense results
             # Need to map sparse_res_content back to original Chunk objects
             sparse_res_chunks_with_objects = []

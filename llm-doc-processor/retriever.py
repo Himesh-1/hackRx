@@ -47,7 +47,7 @@ class Retriever:
 
         logger.info(f"FAISS index built successfully with {self.index.ntotal} vectors.")
 
-    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 15, query_embedding: np.ndarray = None) -> List[Tuple[EmbeddedChunk, float]]:
+    def retrieve(self, parsed_query: ParsedQuery, top_k: int, query_embedding: np.ndarray = None) -> List[Tuple[EmbeddedChunk, float]]:
         """
         Retrieve the most relevant document chunks for a given parsed query using a pre-computed embedding.
 

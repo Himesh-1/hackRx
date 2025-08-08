@@ -66,7 +66,7 @@ class QueryParser:
         entities = self._extract_entities(cleaned_query, doc)
         intent = self._determine_intent(cleaned_query)
         keywords = self._extract_keywords(cleaned_query, doc)
-        enhanced_query = self._rewrite_query(query) if hasattr(self, '_rewrite_query') else query
+        enhanced_query = self._rewrite_queries_batch([query])[0] if hasattr(self, '_rewrite_queries_batch') else query
         confidence = self._calculate_confidence(entities, intent, keywords)
         parsed_query = ParsedQuery(
             original_query=query,
@@ -154,43 +154,7 @@ class QueryParser:
                     keywords.add(keyword)
         return list(keywords)
 
-    def _rewrite_query(self, query: str) -> str:
-        """
-        Rewrites the query using HyDE (Hypothetical Document Embedding) if enabled.
-        This involves generating a hypothetical answer and using it to enhance the query.
-        """
-        if not self.gemini_model or not self.api_keys:
-            logger.warning("Gemini model not initialized or no API keys available, skipping HyDE generation.")
-            return query
-
-        # Check cache first
-        query_hash = hashlib.md5(query.encode('utf-8')).hexdigest()
-        cached_hyde = get_cache(f"hyde_query_{query_hash}")
-        if cached_hyde:
-            logger.info(f"Using cached hypothetical answer for query: {query}")
-            return cached_hyde
-
-        prompt = f"""Given the user query, generate a hypothetical, but plausible, answer that could be found in a relevant document. This hypothetical answer should be concise and directly address the query. Do not include any conversational filler or introductions. Just the hypothetical answer.
-
-User Query: {query}
-
-Hypothetical Answer:"""
-
-        try:
-            # Rotate API key proactively if interval is met
-            self.hyde_queries_processed_in_session += 1
-            if self.hyde_queries_processed_in_session >= self.hyde_key_switch_interval:
-                self.current_hyde_key_index = (self.current_hyde_key_index + 1) % len(self.api_keys)
-                self.hyde_queries_processed_in_session = 0 # Reset counter
-                logger.info(f"Proactively switched to HyDE key index: {self.current_hyde_key_index}")
-
-            hyde_answer = self._call_gemini_for_hyde_with_retry(prompt)
-            enhanced_query = f"{query} {hyde_answer}"
-            set_cache(f"hyde_query_{query_hash}", enhanced_query) # Cache the enhanced query
-            return enhanced_query
-        except Exception as e:
-            logger.error(f"Failed to generate hypothetical answer for query '{query}': {e}")
-            return query # Fallback to original query on failure
+    
 
     def _calculate_confidence(self, entities: Dict[str, Any], intent: str, keywords: List[str]) -> float:
         """
@@ -459,12 +423,49 @@ Hypothetical Answer:"""
         
         queries_to_process = []
         indices_to_fill = []
+        final_enhanced_queries = ["" for _ in queries]
+
         for i, cached_hyde in enumerate(cached_hydes):
             if cached_hyde:
                 logger.info(f"Using cached hypothetical answer for query: '{queries[i]}'")
+                final_enhanced_queries[i] = cached_hyde
             else:
                 queries_to_process.append(queries[i])
                 indices_to_fill.append(i)
+
+        if not queries_to_process:
+            return final_enhanced_queries
+
+        prompt = f"""Given the user queries, generate a hypothetical, but plausible, answer for each that could be found in a relevant document. Return a JSON object with a single key 'hypothetical_answers' which is a list of strings. Each string in the list should be a concise and direct hypothetical answer for the corresponding query. Do not include any conversational filler or introductions. Just the JSON.
+
+User Queries: {json.dumps(queries_to_process)}
+
+Hypothetical Answers (JSON):"""
+
+        try:
+            # Rotate API key proactively if interval is met
+            self.hyde_queries_processed_in_session += len(queries_to_process)
+            if self.hyde_queries_processed_in_session >= self.hyde_key_switch_interval:
+                self.current_hyde_key_index = (self.current_hyde_key_index + 1) % len(self.api_keys)
+                self.hyde_queries_processed_in_session = 0 # Reset counter
+                logger.info(f"Proactively switched to HyDE key index: {self.current_hyde_key_index}")
+
+            hyde_answers_text = self._call_gemini_for_hyde_with_retry(prompt)
+            hyde_answers = self._parse_hyde_batch_response(hyde_answers_text, len(queries_to_process))
+
+            for i, hyde_answer in enumerate(hyde_answers):
+                original_query_index = indices_to_fill[i]
+                enhanced_query = f"{queries[original_query_index]} {hyde_answer}"
+                set_cache(f"hyde_query_{hashlib.md5(queries[original_query_index].encode('utf-8')).hexdigest()}", enhanced_query)
+                final_enhanced_queries[original_query_index] = enhanced_query
+
+        except Exception as e:
+            logger.error(f"Failed to generate hypothetical answers for batch: {e}")
+            # Fallback for failed queries
+            for i in indices_to_fill:
+                final_enhanced_queries[i] = queries[i]
+
+        return final_enhanced_queries
 
         
             

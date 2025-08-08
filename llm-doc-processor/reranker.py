@@ -39,7 +39,7 @@ class ReRanker:
             logger.error(f"Failed to load Cross-Encoder model: {e}", exc_info=True)
             raise
 
-    def rerank(self, parsed_query: ParsedQuery, chunks_with_scores: List[Tuple[Union[EmbeddedChunk, Chunk], float]], top_n: int = 7) -> List[Tuple[Union[EmbeddedChunk, Chunk], float]]:
+    def rerank(self, parsed_query: ParsedQuery, chunks_with_scores: List[Tuple[Union[EmbeddedChunk, Chunk], float]], top_n: int) -> List[Tuple[Union[EmbeddedChunk, Chunk], float]]:
         """
         Re-ranks a list of retrieved chunks based on their relevance to the query.
 
