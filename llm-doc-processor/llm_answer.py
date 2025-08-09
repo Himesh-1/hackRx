@@ -81,7 +81,7 @@ class DecisionEngine:
             try:
                 # Configure with the current API key before each attempt
                 genai.configure(api_key=self.api_keys[self.current_key_index])
-                logger.info(f"Attempt {i+1}/{max_retries} with key index {self.current_key_index} to call Gemini API.")
+                logger.info(f"Attempt {i+1}/{max_retries} with key index {self.current_key_index} (Key: {self.api_keys[self.current_key_index][:5]}...) to call Gemini API.")
                 response = self.model.generate_content(
                     prompt,
                     generation_config=genai.types.GenerationConfig(
@@ -109,24 +109,17 @@ class DecisionEngine:
         Returns a dictionary with a list of answer strings.
         """
         logger.info(f"Making batched decision for {len(processed_questions)} questions.")
-        
         all_answers = []
         llm_batch_size = int(os.getenv("LLM_BATCH_SIZE", 5)) # Default to 5 questions per LLM call
-        key_switch_interval = int(os.getenv("KEY_SWITCH_INTERVAL", 10)) # Switch key after 10 questions
-        questions_processed_in_session = 0
-
         for i in range(0, len(processed_questions), llm_batch_size):
             batch_questions = processed_questions[i:i + llm_batch_size]
             logger.info(f"Processing batch of {len(batch_questions)} questions (questions {i+1} to {min(i+llm_batch_size, len(processed_questions))}).")
 
-            # Proactive key rotation
-            if questions_processed_in_session >= key_switch_interval:
-                self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
-                logger.info(f"Proactively switched to API key index: {self.current_key_index}")
-                questions_processed_in_session = 0 # Reset counter for new key
+            # Proactive key rotation after every 3 questions (1 batch call)
+            self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+            logger.info(f"Proactively switched to API key index: {self.current_key_index}")
 
             prompt = self._construct_batch_prompt(batch_questions)
-            
             if not prompt:
                 # If prompt construction fails for a batch, append errors for these questions
                 all_answers.extend(["Error: Failed to construct prompt for this batch."] * len(batch_questions))
@@ -142,7 +135,6 @@ class DecisionEngine:
                     if all(isinstance(ans, str) for ans in cached_response["answers"]):
                         logger.info(f"Returning valid cached LLM response for prompt hash: {cache_key}")
                         all_answers.extend(cached_response["answers"])
-                        questions_processed_in_session += len(batch_questions)
                         continue
                     else:
                         logger.warning(f"Cached response for {cache_key} contains non-string answers. Deleting cache and re-generating.")
@@ -167,14 +159,13 @@ class DecisionEngine:
                 if "answers" in parsed_response and isinstance(parsed_response["answers"], list):
                     set_cache(cache_key, parsed_response) # Cache the successful response
                     all_answers.extend(parsed_response["answers"])
-                    questions_processed_in_session += len(batch_questions)
                 else:
                     logger.error(f"LLM response for batch did not contain expected 'answers' list or was malformed: {parsed_response}")
                     all_answers.extend(["Error: LLM did not return answers in the expected format."] * len(batch_questions))
 
             except Exception as e:
                 logger.error(f"Error during LLM API call or response parsing for batch: {e}", exc_info=True)
-                all_answers.extend([f"Error: Failed to get response from LLM ({str(e)})." ] * len(batch_questions))
+                all_answers.extend([f"Error: Failed to get response from LLM ({str(e)})."] * len(batch_questions))
         
         return {"answers": all_answers}
 
@@ -206,7 +197,7 @@ class DecisionEngine:
 
             current_tokens += question_tokens
             context_for_question = []
-            max_chunks_per_question = 15 # Increased hard limit to allow more context
+            max_chunks_per_question = 5 # Set to match top_k for consistency
             chunks_added = 0
 
             for idx, chunk_obj in enumerate(item['context']):

@@ -194,45 +194,6 @@ class QueryParser:
         self.gemini_model = None
         self.api_keys = [key.strip() for key in os.getenv("GEMINI_API_KEYS", "").split(',') if key.strip()]
         self.current_hyde_key_index = 0 # Track current key for HyDE
-        self.hyde_queries_processed_in_session = 0 # New: Track queries processed for proactive key rotation
-        self.hyde_key_switch_interval = int(os.getenv("HYDE_KEY_SWITCH_INTERVAL", 5)) # New: Configurable interval
-        self.hyde_cache = {}  # Initialize HyDE cache as an instance variable
-        if not self.api_keys:
-            logger.warning("GEMINI_API_KEYS not found or empty in environment variables. Query rewriting will be disabled.")
-        else:
-            query_rewrite_model_name = os.getenv("QUERY_REWRITE_MODEL", "gemini-1.5-flash")
-            try:
-                self.gemini_model = genai.GenerativeModel(query_rewrite_model_name)
-            except Exception as e:
-                logger.error(f"Failed to initialize Gemini model '{query_rewrite_model_name}' for HyDE: {e}")
-
-    def parse_queries(self, queries: List[str]) -> List[ParsedQuery]:
-        """
-        Batch parses a list of natural language queries to extract structured information.
-        Args:
-            queries: List of natural language query strings.
-        Returns:
-            List of ParsedQuery objects.
-        """
-        return [self.parse_query(q) for q in queries]
-    """
-    QueryParser class to parse natural language queries and extract structured information.
-    """
-
-    def __init__(self, spacy_model: str = "en_core_web_sm"):
-        """
-        Initialize the QueryParser.
-        Args:
-            spacy_model: The Spacy model to use for NLP processing.
-        """
-        self.spacy_model = spacy_model # Store the model name
-        self.nlp = None # Initialize lazily
-        self._setup_patterns()
-        self.gemini_model = None
-        self.api_keys = [key.strip() for key in os.getenv("GEMINI_API_KEYS", "").split(',') if key.strip()]
-        self.current_hyde_key_index = 0 # Track current key for HyDE
-        self.hyde_queries_processed_in_session = 0 # New: Track queries processed for proactive key rotation
-        self.hyde_key_switch_interval = int(os.getenv("HYDE_KEY_SWITCH_INTERVAL", 5)) # New: Configurable interval
         self.hyde_cache = {}  # Initialize HyDE cache as an instance variable
         if not self.api_keys:
             logger.warning("GEMINI_API_KEYS not found or empty in environment variables. Query rewriting will be disabled.")
@@ -362,26 +323,55 @@ class QueryParser:
         }
 
 
-    def _call_gemini_for_hyde_with_retry(self, prompt: str, max_retries: int = int(os.getenv("HYDE_MAX_RETRIES", 3)), initial_delay: float = 0.5) -> str:
+    def _call_gemini_for_hyde_with_retry(self, prompt: str, max_retries: int = int(os.getenv("HYDE_MAX_RETRIES", 3)), initial_delay: float = 0.5, timeout: float = 30.0) -> str:
         """
-        Calls the Gemini API for HyDE generation with retry logic and exponential backoff, including key rotation.
+        Calls the Gemini API for HyDE generation with retry logic, exponential backoff, key rotation, and robust error handling.
+        Returns a fallback answer if all keys are exhausted or on repeated failure.
         """
-        for i in range(max_retries):
+        import threading
+        query_rewrite_model_name = os.getenv("QUERY_REWRITE_MODEL", "gemini-1.5-flash")
+        last_exception = None
+        for i in range(max_retries * len(self.api_keys)):
             try:
                 genai.configure(api_key=self.api_keys[self.current_hyde_key_index])
-                logger.info(f"Attempt {i+1}/{max_retries} with HyDE key index {self.current_hyde_key_index} to call Gemini for HyDE.")
-                response = self.gemini_model.generate_content(prompt)
-                return response.text.strip()
+                self.gemini_model = genai.GenerativeModel(query_rewrite_model_name)
+                logger.info(f"Attempt {i+1}/{max_retries*len(self.api_keys)} with HyDE key index {self.current_hyde_key_index} (Key: {self.api_keys[self.current_hyde_key_index][:5]}...) to call Gemini for HyDE.")
+                # Add timeout to Gemini call
+                result = [None]
+                def call_model():
+                    try:
+                        response = self.gemini_model.generate_content(prompt)
+                        result[0] = response.text.strip()
+                    except Exception as e:
+                        result.append(e)
+                t = threading.Thread(target=call_model)
+                t.start()
+                t.join(timeout)
+                if t.is_alive():
+                    logger.error(f"HyDE Gemini call timed out after {timeout} seconds.")
+                    t.join(0) # Let thread die
+                    raise TimeoutError(f"Gemini call timed out after {timeout} seconds.")
+                if isinstance(result[0], Exception):
+                    raise result[0]
+                if result[0] is not None:
+                    return result[0]
+                else:
+                    raise Exception("Unknown error in Gemini HyDE call.")
             except Exception as e:
-                logger.error(f"HyDE generation failed (Attempt {i+1}/{max_retries}): {e}")
-                if "rate limit" in str(e).lower() or "resource exhausted" in str(e).lower() or "quota" in str(e).lower():
-                    logger.warning("HyDE rate limit hit. Attempting to switch API key.")
+                last_exception = e
+                logger.error(f"HyDE generation failed (Attempt {i+1}/{max_retries*len(self.api_keys)}): {e}")
+                if "rate limit" in str(e).lower() or "resource exhausted" in str(e).lower() or "quota" in str(e).lower() or isinstance(e, TimeoutError):
+                    logger.warning("HyDE rate/timeout/quota limit hit. Attempting to switch API key.")
                     self.current_hyde_key_index = (self.current_hyde_key_index + 1) % len(self.api_keys)
                     logger.warning(f"Switched to HyDE key index: {self.current_hyde_key_index}")
-                    time.sleep(initial_delay * (2 ** i)) # Exponential backoff
+                    time.sleep(initial_delay * (2 ** (i % max_retries))) # Exponential backoff per key
                 else:
-                    raise # Re-raise other exceptions
-        raise Exception(f"Failed to generate hypothetical answer after {max_retries} retries across all keys.")
+                    # For other errors, log and break
+                    logger.error(f"Non-recoverable error in HyDE: {e}")
+                    break
+        logger.error(f"Failed to generate hypothetical answer after {max_retries*len(self.api_keys)} attempts across all keys. Last error: {last_exception}")
+        # Return a fallback answer to avoid crashing
+        return "[HyDE unavailable: fallback answer used]"
 
     def _parse_hyde_batch_response(self, response_text: str, num_queries: int) -> List[str]:
         """
@@ -442,14 +432,9 @@ User Queries: {json.dumps(queries_to_process)}
 
 Hypothetical Answers (JSON):"""
 
+        import time
+        start_time = time.time()
         try:
-            # Rotate API key proactively if interval is met
-            self.hyde_queries_processed_in_session += len(queries_to_process)
-            if self.hyde_queries_processed_in_session >= self.hyde_key_switch_interval:
-                self.current_hyde_key_index = (self.current_hyde_key_index + 1) % len(self.api_keys)
-                self.hyde_queries_processed_in_session = 0 # Reset counter
-                logger.info(f"Proactively switched to HyDE key index: {self.current_hyde_key_index}")
-
             hyde_answers_text = self._call_gemini_for_hyde_with_retry(prompt)
             hyde_answers = self._parse_hyde_batch_response(hyde_answers_text, len(queries_to_process))
 
@@ -463,8 +448,10 @@ Hypothetical Answers (JSON):"""
             logger.error(f"Failed to generate hypothetical answers for batch: {e}")
             # Fallback for failed queries
             for i in indices_to_fill:
-                final_enhanced_queries[i] = queries[i]
+                final_enhanced_queries[i] = queries[i] + " [HyDE unavailable: fallback used]"
 
+        elapsed = time.time() - start_time
+        logger.info(f"HyDE batch processing time: {elapsed:.2f} seconds for {len(queries_to_process)} queries.")
         return final_enhanced_queries
 
         

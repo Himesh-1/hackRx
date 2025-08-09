@@ -14,7 +14,7 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass, asdict
-import openai
+import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import normalize
 from chunker import Chunk
@@ -59,8 +59,8 @@ class DocumentEmbedder:
     """
     
     def __init__(self, 
-                 model_name: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
-                 embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "sentence_transformers"),
+                 model_name: str = os.getenv("EMBEDDING_MODEL", "models/embedding-001"),
+                 embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "gemini"),
                  cache_dir: str = "data/embeddings/",
                  batch_size: int = 32):
         """
@@ -68,13 +68,10 @@ class DocumentEmbedder:
         
         Args:
             model_name: Name of the embedding model
-            embedding_provider: "sentence_transformers", "openai", or "huggingface"
+            embedding_provider: "sentence_transformers", "gemini"
             cache_dir: Directory to cache embeddings
             batch_size: Batch size for processing chunks
         """
-        if embedding_provider == "openai" and model_name == "all-MiniLM-L6-v2":
-            model_name = "text-embedding-ada-002" # Default for OpenAI
-
         self.model_name = model_name
         self.embedding_provider = embedding_provider
         self.cache_dir = Path(cache_dir)
@@ -93,7 +90,7 @@ class DocumentEmbedder:
     def _initialize_model(self):
         """
         Initializes the embedding model based on the configured provider.
-        Supports 'sentence_transformers' and 'openai'.
+        Supports 'sentence_transformers' and 'gemini'.
         Only loads the model if it hasn't been loaded yet.
 
         Raises:
@@ -108,13 +105,13 @@ class DocumentEmbedder:
                 self.model = SentenceTransformer(self.model_name)
                 logger.info(f"Loaded SentenceTransformer model: {self.model_name}")
                 
-            elif self.embedding_provider == "openai":
-                # Initialize OpenAI client
-                openai.api_key = os.getenv("OPENAI_API_KEY")
-                if not openai.api_key:
-                    raise ValueError("OPENAI_API_KEY environment variable not set")
-                self.model = "openai"  # Placeholder
-                logger.info(f"Initialized OpenAI embeddings with model: {self.model_name}")
+            elif self.embedding_provider == "gemini":
+                api_key = os.getenv("GEMINI_API_KEYS", "").split(',')[0]
+                if not api_key:
+                    raise ValueError("GEMINI_API_KEYS environment variable not set or is empty.")
+                genai.configure(api_key=api_key)
+                self.model = "gemini"  # Placeholder
+                logger.info(f"Initialized Gemini embeddings with model: {self.model_name}")
                 
             else:
                 raise ValueError(f"Unsupported embedding provider: {self.embedding_provider}")
@@ -154,8 +151,8 @@ class DocumentEmbedder:
             try:
                 if self.embedding_provider == "sentence_transformers":
                     embeddings = self.model.encode(batch_texts, convert_to_numpy=True)
-                elif self.embedding_provider == "openai":
-                    embeddings = self._get_openai_embeddings(batch_texts)
+                elif self.embedding_provider == "gemini":
+                    embeddings = self._get_gemini_embeddings(batch_texts)
                 
                 # Normalize embeddings
                 embeddings = normalize(embeddings)
@@ -181,9 +178,9 @@ class DocumentEmbedder:
         logger.info(f"Finished embedding process. Total embedded chunks: {len(embedded_chunks)}")
         return embedded_chunks
     
-    def _get_openai_embeddings(self, texts: List[str]) -> np.ndarray:
+    def _get_gemini_embeddings(self, texts: List[str]) -> np.ndarray:
         """
-        Retrieves embeddings for a list of texts using the OpenAI API.
+        Retrieves embeddings for a list of texts using the Gemini API.
 
         Args:
             texts (List[str]): A list of strings to embed.
@@ -192,22 +189,18 @@ class DocumentEmbedder:
             np.ndarray: A NumPy array of embeddings.
 
         Raises:
-            Exception: If there's an error during the OpenAI API call.
+            Exception: If there's an error during the Gemini API call.
         """
         try:
-            response = openai.Embedding.create(
-                input=texts,
-                model=self.model_name
+            result = genai.embed_content(
+                model=self.model_name,
+                content=texts,
+                task_type="retrieval_document"
             )
-            
-            embeddings = []
-            for item in response['data']:
-                embeddings.append(np.array(item['embedding']))
-            
-            return np.array(embeddings)
+            return np.array(result['embedding'])
             
         except Exception as e:
-            logger.error(f"OpenAI API error: {str(e)}")
+            logger.error(f"Gemini API error: {str(e)}")
             raise
     
     def embed_query(self, query: str) -> np.ndarray:
@@ -242,8 +235,8 @@ class DocumentEmbedder:
         try:
             if self.embedding_provider == "sentence_transformers":
                 embeddings = self.model.encode(queries, convert_to_numpy=True)
-            elif self.embedding_provider == "openai":
-                embeddings = self._get_openai_embeddings(queries)
+            elif self.embedding_provider == "gemini":
+                embeddings = self._get_gemini_embeddings(queries)
             
             # Normalize embeddings
             embeddings = normalize(embeddings)
@@ -476,8 +469,8 @@ if __name__ == "__main__":
     
     # Test different embedding models
     embedding_configs = [
+        ("models/embedding-001", "gemini"),
         ("all-MiniLM-L6-v2", "sentence_transformers"),
-        ("all-mpnet-base-v2", "sentence_transformers"),
     ]
     
     for model_name, provider in embedding_configs:
@@ -506,10 +499,10 @@ if __name__ == "__main__":
             
             # Find similar chunks
             similar_chunks = embedder.find_similar_chunks(
-                query_embedding, embedded_chunks, top_k=3
+                query_embedding, embedded_chunks, top_k=5
             )
             
-            print(f"\nTop 3 similar chunks for '{test_query}':")
+            print(f"\nTop 5 similar chunks for '{test_query}':")
             for i, (chunk, score) in enumerate(similar_chunks):
                 print(f"{i+1}. Score: {score:.3f}")
                 print(f"   Content: {chunk.chunk.content[:100]}...")

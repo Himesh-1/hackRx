@@ -32,7 +32,7 @@ class SparseRetriever:
         self.tokenized_corpus = [doc.split(" ") for doc in self.corpus]
         self.bm25 = BM25Okapi(self.tokenized_corpus)
 
-    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 15) -> List[Tuple[str, float]]:
+    def retrieve(self, parsed_query: ParsedQuery, top_k: int = 5) -> List[Tuple[str, float]]:
         """
         Retrieve the most relevant document chunks for a given parsed query.
 
