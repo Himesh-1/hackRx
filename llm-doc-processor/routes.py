@@ -8,13 +8,14 @@ import asyncio
 import logging
 import time
 from typing import List, Any, Tuple, Union, Dict
-import os
-import asyncio
-import logging
-import time # Import time
-from typing import List, Any, Tuple, Union, Dict
+import hashlib
+import json
+import numpy as np
+from database_utils import log_question
 from fastapi import APIRouter, HTTPException, Request # Import Request
 from pydantic import BaseModel
+
+from utils import cache_utils # Added for caching LLM responses
 
 from loader import DocumentLoader
 from chunker import DocumentChunker, Chunk
@@ -23,7 +24,7 @@ from query_parser import QueryParser
 from retriever import Retriever
 from sparse_retriever import SparseRetriever
 from reranker import ReRanker
-from llm_answer import DecisionEngine
+from llm_answer import DecisionEngine, _estimate_tokens
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -55,9 +56,48 @@ async def process_query(request_data: HackRxRequest, request: Request):
         sparse_retriever = request.app.state.sparse_retriever
         embedded_chunks = request.app.state.embedded_chunks
         chunks = request.app.state.chunks # Original chunks for sparse retriever mapping
+        doc_hashes = request.app.state.doc_hashes
 
         if not dense_retriever or not sparse_retriever or not embedded_chunks or not chunks:
             raise HTTPException(status_code=500, detail="Application not fully initialized. Indices not loaded.")
+
+        # Download the document and compute its hash
+        loader = DocumentLoader()
+        try:
+            downloaded_doc = await loader.load_document_from_url(request_data.documents)
+            with open(loader.download_dir / downloaded_doc.filename, "rb") as f:
+                doc_hash = hashlib.sha256(f.read()).hexdigest()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to download or hash document: {e}")
+
+        # Check if the document is already processed
+        if downloaded_doc.filename in doc_hashes and doc_hashes[downloaded_doc.filename] == doc_hash:
+            logger.info(f"Document {downloaded_doc.filename} is already processed. Using pre-built indices.")
+            # Filter chunks for the matched document
+            doc_chunks = [chunk for chunk in chunks if chunk.source_document == downloaded_doc.filename]
+            doc_embedded_chunks = [emb_chunk for emb_chunk in embedded_chunks if emb_chunk.chunk.source_document == downloaded_doc.filename]
+        else:
+            logger.info(f"Document {downloaded_doc.filename} is new. Processing from scratch.")
+            # Process the new document
+            chunker = DocumentChunker()
+            doc_chunks = chunker.chunk_document(downloaded_doc)
+            embedder = DocumentEmbedder()
+            doc_embedded_chunks = embedder.embed_chunks(doc_chunks)
+
+            # Update the global state with the new data
+            embedded_chunks.extend(doc_embedded_chunks)
+            chunks.extend(doc_chunks)
+            doc_hashes[downloaded_doc.filename] = doc_hash
+
+            # Update the retrievers with the new data
+            dense_retriever.index.add(np.array([chunk.embedding for chunk in doc_embedded_chunks]).astype('float32'))
+            # The sparse retriever needs to be re-initialized with the new corpus
+            new_corpus = [c.content for c in chunks]
+            request.app.state.sparse_retriever = SparseRetriever(new_corpus)
+
+            # Persist the updated data
+            from utils.index_manager import build_persistent_indices
+            build_persistent_indices()
 
         # 5. Process Questions
         process_questions_start = time.time()
@@ -70,104 +110,67 @@ async def process_query(request_data: HackRxRequest, request: Request):
 
         all_questions = request_data.questions
         query_parser_instance = QueryParser() # Instantiate QueryParser
-        query_parser_instance = QueryParser() # Instantiate QueryParser
-        parsed_queries = query_parser_instance.parse_queries(all_questions)
         
-        # Embed queries using a fresh embedder instance if needed, or pass the one from app.state if it's a singleton
-        # For now, let's assume embedder is stateless for query embedding and can be instantiated here
-        query_embedder = DocumentEmbedder() 
-        query_embeddings = query_embedder.embed_queries([pq.enhanced_query for pq in parsed_queries])
-
-        # Concurrently retrieve from both dense and sparse retrievers
-        retrieval_start = time.time()
-        dense_retrieval_tasks = [
-            asyncio.to_thread(dense_retriever.retrieve, pq, top_k, emb)
-            for pq, emb in zip(parsed_queries, query_embeddings)
-        ]
-        sparse_retrieval_tasks = [
-            asyncio.to_thread(sparse_retriever.retrieve, pq, top_k)
-            for pq in parsed_queries
-        ]
-
-        dense_results = await asyncio.gather(*dense_retrieval_tasks)
-        sparse_results = await asyncio.gather(*sparse_retrieval_tasks)
-        retrieval_end = time.time()
-        logger.info(f"Step 5a: Retrieval (Dense + Sparse) took {retrieval_end - retrieval_start:.2f} seconds")
-
-        
-        
-        # Note: For sparse results (BM25), a direct similarity threshold like 0.6 might not be directly applicable
-        # as BM25 scores are not normalized like cosine similarity. We'll keep them as is for now,
-        # or a separate, context-specific threshold would be needed for BM25.
-
-        # Fuse the results
-        fuse_start = time.time()
-        fused_results = []
-        for dense_res, sparse_res in zip(dense_results, sparse_results):
-            # Convert sparse results to the same format as dense results
-            # Need to map sparse_res_content back to original Chunk objects
+        # --- BATCHED PIPELINE WITH PROPER CACHE AND ANSWER EXTRACTION ---
+        processed_questions = []
+        cache_keys = []
+        temp_engine = DecisionEngine()
+        for question_text in all_questions:
+            # Build context for each question
+            parsed_query = query_parser_instance.parse_queries([question_text])[0]
+            query_embedder = DocumentEmbedder()
+            query_embedding = query_embedder.embed_queries([parsed_query.enhanced_query])[0]
+            dense_result = await asyncio.to_thread(dense_retriever.retrieve, parsed_query, top_k, query_embedding)
+            sparse_result = await asyncio.to_thread(request.app.state.sparse_retriever.retrieve, parsed_query, top_k)
             sparse_res_chunks_with_objects = []
-            for content, score in sparse_res:
-                # Find the original chunk object for this content
-                original_chunk = next((c for c in chunks if c.content == content), None)
+            for content, score in sparse_result:
+                original_chunk = next((c for c in doc_chunks if c.content == content), None)
                 if original_chunk:
                     sparse_res_chunks_with_objects.append((original_chunk, score))
-                else:
-                    logger.warning(f"Original chunk object not found for content: {content[:50]}...")
-
-            fused_results.append(_reciprocal_rank_fusion([dense_res, sparse_res_chunks_with_objects]))
-        fuse_end = time.time()
-        logger.info(f"Step 5c: Fusing Results took {fuse_end - fuse_start:.2f} seconds")
-
-        # Re-rank the fused results
-        rerank_start = time.time()
-        rerank_tasks = [
-            asyncio.to_thread(reranker.rerank, pq, fused_res_for_q, rerank_top_n)
-            for pq, fused_res_for_q in zip(parsed_queries, fused_results)
-        ]
-        reranked_contexts = await asyncio.gather(*rerank_tasks)
-        rerank_end = time.time()
-        logger.info(f"Step 5d: Re-ranking took {rerank_end - rerank_start:.2f} seconds")
-
-        # Generate answers
-        llm_start = time.time()
-        processed_questions = []
-        for pq, context_list_with_scores in zip(parsed_queries, reranked_contexts):
-            # context_list_with_scores now contains (Chunk/EmbeddedChunk, score) tuples
-            # We need to pass the Chunk/EmbeddedChunk objects to the DecisionEngine
+            fused_result = _reciprocal_rank_fusion([dense_result, sparse_res_chunks_with_objects])
+            reranked_context = reranker.rerank([parsed_query], [fused_result], rerank_top_n)[0]
             processed_questions.append({
-                "question": pq.original_query,
-                "context": [item[0] for item in context_list_with_scores] # Pass the chunk object
+                "question": parsed_query.original_query,
+                "context": [item[0] for item in reranked_context]
             })
+            # Compute cache key as in llm_answer.py
+            prompt = temp_engine._construct_batch_prompt([{
+                "question": parsed_query.original_query,
+                "context": [item[0] for item in reranked_context]
+            }])
+            cache_key = hashlib.md5(prompt.encode('utf-8')).hexdigest() if prompt else None
+            cache_keys.append(cache_key)
 
-        try:
-            decision_result = decision_engine.make_decisions_batch(processed_questions)
-        except KeyError as e:
-            logger.error(f"KeyError in decision engine - missing template variable: {e}")
-            # Return default answers for all questions
-            decision_result = {
-                "answers": [{"answer": "Sorry, I cannot process this question due to a template error.", "source_clauses": []}] * len(all_questions)
-            }
-        except Exception as e:
-            logger.error(f"Error in decision engine: {e}")
-            decision_result = {
-                "answers": [{"answer": "Sorry, I cannot process this question due to an internal error.", "source_clauses": []}] * len(all_questions)
-            }
-        llm_end = time.time()
-        logger.info(f"Step 5e: LLM Answer Generation took {llm_end - llm_start:.2f} seconds")
+        # Check cache for all questions
+        answers = [None] * len(all_questions)
+        for i, cache_key in enumerate(cache_keys):
+            if cache_key:
+                cached = cache_utils.get_cache(cache_key)
+                if cached and isinstance(cached, dict) and isinstance(cached.get("answers"), list) and len(cached["answers"]) == 1:
+                    ans = cached["answers"][0]
+                    if not (isinstance(ans, str) and (ans.startswith("Error:") or "Could not generate an answer" in ans or "Sorry, I cannot process" in ans)):
+                        answers[i] = ans
 
-        if "error" in decision_result:
-            raise HTTPException(status_code=500, detail=decision_result["error"])
-
-        final_answers = decision_result.get("answers", [])
-        # Ensure all questions have an answer, even if empty
-        if len(final_answers) != len(all_questions):
-            logger.warning("Mismatch between number of questions and answers. Padding with default error.")
-            while len(final_answers) < len(all_questions):
-                final_answers.append("Could not generate an answer.")
-
+        # Only send missing/failed questions to LLM
+        questions_to_send = [processed_questions[i] for i, a in enumerate(answers) if a is None]
+        idxs_to_fill = [i for i, a in enumerate(answers) if a is None]
+        if questions_to_send:
+            decision_result = decision_engine.make_decisions_batch(questions_to_send)
+            new_answers = decision_result.get("answers", [])
+            for j, idx in enumerate(idxs_to_fill):
+                ans = new_answers[j] if j < len(new_answers) else "Error: No answer generated."
+                answers[idx] = ans
+                # Set cache for this answer using the same cache key
+                cache_key = cache_keys[idx]
+                if cache_key and not (isinstance(ans, str) and (ans.startswith("Error:") or "Could not generate an answer" in ans or "Sorry, I cannot process" in ans)):
+                    cache_utils.set_cache(cache_key, {"answers": [ans]})
+        # Log and return
+        for i, question_text in enumerate(all_questions):
+            answer = answers[i]
+            answered_correctly = not ("Sorry, I cannot process this question" in answer or "Could not generate an answer." in answer)
+            log_question(question_text, request_data.documents, answered_correctly)
         logger.info(f"Total processing time: {time.time() - start_time:.2f} seconds")
-        return HackRxResponse(answers=final_answers)
+        return HackRxResponse(answers=answers)
 
     except Exception as e:
         logger.error(f"An error occurred during processing: {e}")

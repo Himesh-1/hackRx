@@ -14,6 +14,9 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass, asdict
+
+from dotenv import load_dotenv
+load_dotenv()
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import normalize

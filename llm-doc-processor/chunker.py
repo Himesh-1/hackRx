@@ -52,11 +52,13 @@ class DocumentChunker:
         self.chunking_strategy = chunking_strategy
         try:
             self.nlp = spacy.load("en_core_web_sm")
+            self.nlp.max_length = 2_000_000  # Increase max_length to handle large texts
         except OSError:
             logger.info("Spacy model not found, downloading...")
             from spacy.cli import download
             download("en_core_web_sm")
             self.nlp = spacy.load("en_core_web_sm")
+            self.nlp.max_length = 2_000_000  # Increase max_length to handle large texts
         
         # Enhanced patterns for insurance policy document chunking
         self.section_patterns = [

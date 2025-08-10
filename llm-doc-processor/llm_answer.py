@@ -105,69 +105,116 @@ class DecisionEngine:
 
     def make_decisions_batch(self, processed_questions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Makes a single, batched decision for a list of questions with smart context stuffing.
-        Returns a dictionary with a list of answer strings.
+        For each question/context, check cache. Only send missing/failed questions to LLM in batches. Aggregate all answers in original order.
         """
-        logger.info(f"Making batched decision for {len(processed_questions)} questions.")
-        all_answers = []
-        llm_batch_size = int(os.getenv("LLM_BATCH_SIZE", 5)) # Default to 5 questions per LLM call
-        for i in range(0, len(processed_questions), llm_batch_size):
-            batch_questions = processed_questions[i:i + llm_batch_size]
-            logger.info(f"Processing batch of {len(batch_questions)} questions (questions {i+1} to {min(i+llm_batch_size, len(processed_questions))}).")
-
-            # Proactive key rotation after every 3 questions (1 batch call)
-            self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
-            logger.info(f"Proactively switched to API key index: {self.current_key_index}")
-
-            prompt = self._construct_batch_prompt(batch_questions)
+        logger.info(f"Making batched decision for {len(processed_questions)} questions (with smart retry).")
+        batch_size = 7
+        # Track answers and which need LLM
+        answers = [None] * len(processed_questions)
+        batch_indices = []
+        batch_questions = []
+        # 1. Check cache for each question
+        for idx, item in enumerate(processed_questions):
+            prompt = self._construct_batch_prompt([item])
             if not prompt:
-                # If prompt construction fails for a batch, append errors for these questions
-                all_answers.extend(["Error: Failed to construct prompt for this batch."] * len(batch_questions))
+                answers[idx] = "Error: Failed to construct prompt."
                 continue
-
-            # Generate a cache key from the prompt
             cache_key = hashlib.md5(prompt.encode('utf-8')).hexdigest()
             cached_response = get_cache(cache_key)
-            if cached_response:
-                # Validate cached response structure
-                if isinstance(cached_response, dict) and isinstance(cached_response.get("answers"), list):
-                    # Further validate that all items in 'answers' are strings
-                    if all(isinstance(ans, str) for ans in cached_response["answers"]):
-                        logger.info(f"Returning valid cached LLM response for prompt hash: {cache_key}")
-                        all_answers.extend(cached_response["answers"])
-                        continue
-                    else:
-                        logger.warning(f"Cached response for {cache_key} contains non-string answers. Deleting cache and re-generating.")
-                        delete_cache(cache_key)
-                else:
-                    logger.warning(f"Cached response for {cache_key} is not a valid dict/list. Deleting cache and re-generating.")
-                    delete_cache(cache_key)
+            if cached_response and isinstance(cached_response, dict) and isinstance(cached_response.get("answers"), list) and len(cached_response["answers"]) == 1 and isinstance(cached_response["answers"][0], str):
+                # Only use if not a generic error
+                cached_answer = cached_response["answers"][0]
+                if not (cached_answer.startswith("Error:") or "Could not generate an answer" in cached_answer or "Sorry, I cannot process" in cached_answer):
+                    answers[idx] = cached_answer
+                    continue
+            # Needs LLM
+            batch_indices.append(idx)
+            batch_questions.append(item)
 
+        # 2. Batch missing/failed questions, send to LLM
+        for i in range(0, len(batch_questions), batch_size):
+            batch = batch_questions[i:i+batch_size]
+            batch_idxs = batch_indices[i:i+batch_size]
+            prompt = self._construct_batch_prompt(batch)
+            if not prompt:
+                for idx in batch_idxs:
+                    answers[idx] = "Error: Failed to construct prompt for this batch."
+                continue
+            cache_key = hashlib.md5(prompt.encode('utf-8')).hexdigest()
+            cached_response = get_cache(cache_key)
+            if cached_response and isinstance(cached_response, dict) and isinstance(cached_response.get("answers"), list) and len(cached_response["answers"]) == len(batch):
+                # Only use if not all are generic errors
+                for j, ans in enumerate(cached_response["answers"]):
+                    if not (isinstance(ans, str) and (ans.startswith("Error:") or "Could not generate an answer" in ans or "Sorry, I cannot process" in ans)):
+                        answers[batch_idxs[j]] = ans
+                # For any still missing, will retry below
+                continue
             final_token_estimate = _estimate_tokens(prompt)
             logger.info(f"Final prompt token estimate for batch: {final_token_estimate}")
-
             if final_token_estimate > self.max_prompt_tokens:
                 logger.error(f"FATAL: Prompt size ({final_token_estimate}) exceeds max limit ({self.max_prompt_tokens}). Skipping batch.")
-                all_answers.extend(["Error: Prompt too large for LLM."] * len(batch_questions))
+                for idx in batch_idxs:
+                    answers[idx] = "Error: Prompt too large for LLM."
                 continue
-
             try:
                 response = self._call_gemini_with_retry(prompt)
                 logger.info(f"LLM raw response for batch: {response.text!r}")
                 parsed_response = self._parse_llm_batch_response(response.text)
-                
-                if "answers" in parsed_response and isinstance(parsed_response["answers"], list):
-                    set_cache(cache_key, parsed_response) # Cache the successful response
-                    all_answers.extend(parsed_response["answers"])
+                if "answers" in parsed_response and isinstance(parsed_response["answers"], list) and len(parsed_response["answers"]) == len(batch):
+                    # Only cache if not all are generic errors
+                    valid_answers = []
+                    for j, ans in enumerate(parsed_response["answers"]):
+                        if not (isinstance(ans, str) and (ans.startswith("Error:") or "Could not generate an answer" in ans or "Sorry, I cannot process" in ans)):
+                            answers[batch_idxs[j]] = ans
+                        valid_answers.append(ans)
+                    # Only cache if at least one is not a generic error
+                    if any(not (isinstance(ans, str) and (ans.startswith("Error:") or "Could not generate an answer" in ans or "Sorry, I cannot process" in ans)) for ans in valid_answers):
+                        set_cache(cache_key, {"answers": valid_answers})
                 else:
                     logger.error(f"LLM response for batch did not contain expected 'answers' list or was malformed: {parsed_response}")
-                    all_answers.extend(["Error: LLM did not return answers in the expected format."] * len(batch_questions))
-
+                    logger.error(f"Raw LLM output for failed batch: {response.text!r}")
+                    # Fallback: retry each question in the batch individually
+                    for j, idx in enumerate(batch_idxs):
+                        single_prompt = self._construct_batch_prompt([batch[j]])
+                        if not single_prompt:
+                            answers[idx] = "Error: Failed to construct prompt."
+                            continue
+                        single_cache_key = hashlib.md5(single_prompt.encode('utf-8')).hexdigest()
+                        single_cached = get_cache(single_cache_key)
+                        if single_cached and isinstance(single_cached, dict) and isinstance(single_cached.get("answers"), list) and len(single_cached["answers"]) == 1:
+                            ans = single_cached["answers"][0]
+                            if not (isinstance(ans, str) and (ans.startswith("Error:") or "Could not generate an answer" in ans or "Sorry, I cannot process" in ans)):
+                                answers[idx] = ans
+                                continue
+                        try:
+                            single_response = self._call_gemini_with_retry(single_prompt)
+                            logger.info(f"LLM raw response for single question: {single_response.text!r}")
+                            single_parsed = self._parse_llm_batch_response(single_response.text)
+                            if "answers" in single_parsed and isinstance(single_parsed["answers"], list) and len(single_parsed["answers"]) == 1:
+                                ans = single_parsed["answers"][0]
+                                if not (isinstance(ans, str) and (ans.startswith("Error:") or "Could not generate an answer" in ans or "Sorry, I cannot process" in ans)):
+                                    answers[idx] = ans
+                                set_cache(single_cache_key, {"answers": [ans]})
+                            else:
+                                logger.error(f"LLM response for single question did not contain expected 'answers' list or was malformed: {single_parsed}")
+                                logger.error(f"Raw LLM output for failed single: {single_response.text!r}")
+                                answers[idx] = "Error: LLM did not return answer in the expected format (single retry)."
+                        except Exception as e2:
+                            logger.error(f"Error during LLM API call or response parsing for single question retry: {e2}", exc_info=True)
+                            answers[idx] = f"Error: Failed to get response from LLM (single retry: {str(e2)})."
             except Exception as e:
                 logger.error(f"Error during LLM API call or response parsing for batch: {e}", exc_info=True)
-                all_answers.extend([f"Error: Failed to get response from LLM ({str(e)})."] * len(batch_questions))
-        
-        return {"answers": all_answers}
+                for idx in batch_idxs:
+                    answers[idx] = f"Error: Failed to get response from LLM ({str(e)})."
+            # Rotate API key after each batch
+            self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+            genai.configure(api_key=self.api_keys[self.current_key_index])
+
+        # 3. Fill any still-missing answers with a clear error
+        for idx, ans in enumerate(answers):
+            if ans is None:
+                answers[idx] = "Error: No answer generated."
+        return {"answers": answers}
 
     def _construct_batch_prompt(self, processed_questions: List[Dict[str, Any]]) -> str:
         """
@@ -251,26 +298,24 @@ class DecisionEngine:
     def _parse_llm_batch_response(self, response_text: str) -> Dict[str, Any]:
         """
         Parses the LLM's response to extract the structured JSON object with a list of answers.
-        Expected format: { "answers": ["Answer 1", "Answer 2", ...] }
+        Accepts JSON with or without code block, strips markdown, and falls back to first valid JSON object.
         """
         try:
-            # Attempt to find JSON block wrapped in ```json ... ```
-            json_match = re.search(r'```json\n(.*?)\n```', response_text, re.DOTALL)
+            # Remove any leading/trailing whitespace and markdown artifacts
+            cleaned = response_text.strip()
+            # Remove triple backticks and language if present
+            cleaned = re.sub(r'^```[a-zA-Z]*', '', cleaned).strip()
+            cleaned = re.sub(r'```$', '', cleaned).strip()
+            # Try to find the first JSON object
+            json_match = re.search(r'({[\s\S]*})', cleaned)
             if json_match:
                 json_str = json_match.group(1).strip()
             else:
-                # If not found, attempt to find a standalone JSON object
-                json_match = re.search(r'({.*})', response_text, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(0).strip() # Use group(0) to get the whole matched string
-                else:
-                    raise ValueError("Could not find a JSON block in the LLM response.")
+                raise ValueError("Could not find a JSON object in the LLM response.")
 
             decision = json.loads(json_str)
-            
             # Validate the structure: expect a dict with an 'answers' key which is a list of strings
             if isinstance(decision, dict) and isinstance(decision.get('answers'), list):
-                # Further validate each item in the 'answers' list is a string
                 for ans_item in decision['answers']:
                     if not isinstance(ans_item, str):
                         raise json.JSONDecodeError("Each answer in 'answers' list must be a string.", json_str, 0)

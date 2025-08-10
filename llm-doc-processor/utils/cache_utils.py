@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 CACHE_DB_PATH = "data/cache.db"
-CACHE_EXPIRATION_DAYS = 7 # Cache entries expire after 7 days
+CACHE_EXPIRATION_DAYS = 20 # Cache entries expire after 7 days
 
 def init_cache_db():
     """Initializes the SQLite database for caching LLM responses and query rewrites."""

@@ -217,6 +217,7 @@ class QueryParser:
 
         try:
             self.nlp = spacy.load(model_name)
+            self.nlp.max_length = 2_000_000  # Increase max_length to handle large texts
             return self.nlp
         except OSError:
             logger.warning(f"Spacy model '{model_name}' not found. Downloading...")

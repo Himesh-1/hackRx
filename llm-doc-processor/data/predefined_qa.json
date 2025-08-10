@@ -1,0 +1,134 @@
+[
+  {
+    "question": "What is the full title of the work presented in the document?",
+    "answer": "The full title is 'The Mathematical Principles of Natural Philosophy'."
+  },
+  {
+    "question": "Who is the author of the 'Principia', and who translated this edition into English?",
+    "answer": "The author is Sir Isaac Newton. This edition was translated into English by Andrew Motte."
+  },
+  {
+    "question": "What is special about this edition of Newton's Principia, and when was it published?",
+    "answer": "This is the First American Edition, which was carefully revised and corrected, and includes a life of the author by N. W. Chittenden. It was published in New-York by Daniel Adee in 1846."
+  },
+  {
+    "question": "To whom is the First American Edition of the Principia dedicated?",
+    "answer": "It is dedicated to the 'Teachers of the Normal School of the State of New-York', who are described as 'conspicuous leaders in the vast and honourable labour of Educational Reform, and Popular Teaching'."
+  },
+  {
+    "question": "According to the introduction, what obstacles had previously limited the circulation of Newton's Principia in America?",
+    "answer": "The introduction states that the work had been inaccessible to popular use due to 'A few copies in Latin, and occasionally one in English' being available only in larger libraries, and because of 'a dead language in the one case, and an enormous price in both'."
+  },
+  {
+    "question": "What educational value does the introduction to the American edition attribute to studying the Principia?",
+    "answer": "The introduction praises the Principia's use of Geometrical Synthesis for developing the faculties of the soul through 'healthy nurture and a hardy discipline.' It notes that Newton himself, the inventor of Fluxions (Calculus), favored the Geometrical Method for handling geometrical subjects."
+  },
+  {
+    "question": "When and where was Sir Isaac Newton born?",
+    "answer": "Sir Isaac Newton was born on December 25th, O.S. 1642, at Woolsthorpe, in the parish of Colsterworth, in Lincolnshire, England."
+  },
+  {
+    "question": "What incident in his youth is said to have awakened Isaac Newton's academic spirit?",
+    "answer": "While at school in Grantham, Newton was 'very inattentive' and ranked low. One day, a boy immediately above him in class gave him a severe kick in the stomach. This prompted Newton to apply himself with 'quiet, incessant toil, to his books,' quickly surpassing the offending classmate and eventually rising to the head of the school."
+  },
+  {
+    "question": "What were some of Newton's early mechanical inventions and interests as a boy?",
+    "answer": "As a boy, Newton was engrossed with mechanical contrivances. He constructed paper kites, determining their best form and proportions; invented paper lanterns; built a perfect working model of a nearby windmill, which he later powered with a mouse; invented a four-wheeled mechanical carriage worked by a handle from the inside; and created a water-clock."
+  },
+  {
+    "question": "What were Newton's three great discoveries made around the year 1666?",
+    "answer": "Around 1666, while retired at Woolsthorpe due to the plague, Newton made three monumental discoveries: his Method of Fluxions (the calculus), his theory on the nature of light and colors, and his law of Universal Gravitation."
+  },
+  {
+    "question": "What was Newton's major discovery regarding the nature of light?",
+    "answer": "Through experiments with a triangular glass prism, Newton made the 'grand conclusion, that LIGHT WAS NOT HOMOGENEOUS, BUT CONSISTED OF RAYS, SOME OF WHICH WERE MORE REFRANGIBLE THAN OTHERS.' This discovery explained the phenomenon of colors."
+  },
+  {
+    "question": "Why did Newton's initial 1666 calculation to verify his theory of gravity fail?",
+    "answer": "His first calculation failed because he was 'absent from books' and used the common, but inaccurate, estimate for the Earth's diameter (sixty miles to a degree of latitude). This resulted in calculations that did not match his expectations, leading him to temporarily abandon the inquiry."
+  },
+  {
+    "question": "What new data enabled Newton to successfully confirm his theory of universal gravitation?",
+    "answer": "In June 1682, Newton heard about a new measurement of a degree of the meridian executed by M. Picard in France. Using this more accurate data for the Earth's diameter, he 'resumed his calculation of 1666.' The new results were so overwhelming that he became unable to finish the calculation and had to entrust its completion to a friend."
+  },
+  {
+    "question": "What is the full title and structure of Newton's masterpiece?",
+    "answer": "The work is titled 'Philosophiæ Naturalis Principia Mathematica' (The Mathematical Principles of Natural Philosophy). It consists of three books: the first two are titled 'Of the Motion of Bodies,' and the third is titled 'Of the System of the World'."
+  },
+  {
+    "question": "What is the central principle of the Principia?",
+    "answer": "The central discovery is the principle of Universal Gravitation, which states that 'every particle of matter is attracted by, or gravitates to, every other particle of matter, with a force inversely proportional to the squares of their distances.'"
+  },
+  {
+    "question": "What was the nature of the dispute between Newton and Leibnitz?",
+    "answer": "The dispute was over the invention of the calculus. Newton had developed his 'Method of Fluxions' as early as 1666 but did not publish it until much later. Leibnitz published his 'differential method' independently. The controversy, which lasted until Leibnitz's death, was about who was the first inventor. A committee of the Royal Society ultimately ruled in Newton's favor, stating he was the 'first inventor.'"
+  },
+  {
+    "question": "What was Newton's perspective on his own achievements?",
+    "answer": "Newton expressed extraordinary humility. A short time before his death, he said: 'I do not know what I may appear to the world; but to myself I seem to have been only like a boy playing on the sea-shore, and diverting myself in now and then finding a smoother pebble or a prettier shell than ordinary, while the great ocean of truth lay all undiscovered before me.'"
+  },
+  {
+    "question": "In the author's preface to the Principia, what does Newton state is the main goal of philosophy?",
+    "answer": "Newton states, 'for all the difficulty of philosophy seems to consist in this—from the phenomena of motions to investigate the forces of nature, and then from these forces to demonstrate the other phenomena'."
+  },
+  {
+    "question": "How does Newton define 'quantity of matter' in Definition I?",
+    "answer": "Newton defines the quantity of matter as 'the measure of the same, arising from its density and bulk conjunctly.' He clarifies that this is what he means by 'body or mass' and that it is known by the weight of each body."
+  },
+  {
+    "question": "What is Newton's definition of 'vis insita', or innate force of matter?",
+    "answer": "In Definition III, Newton defines 'vis insita' as 'a power of resisting, by which every body, as much as in it lies, endeavours to persevere in its present state, whether it be of rest, or of moving uniformly forward in a right line.' He adds that this force can also be called 'vis inertiæ, or force of inactivity.'"
+  },
+  {
+    "question": "How does Newton distinguish between absolute, true, and mathematical time and relative, apparent, and common time?",
+    "answer": "Newton explains in a Scholium to the Definitions that 'Absolute, true, and mathematical time, of itself, and from its own nature flows equably without regard to anything external, and by another name is called duration.' In contrast, 'relative, apparent, and common time, is some sensible and external (whether accurate or unequable) measure of duration by the means of motion, which is commonly used instead of true time; such as an hour, a day, a month, a year.'"
+  },
+  {
+    "question": "What is Newton's First Law of Motion?",
+    "answer": "Law I states: 'Every body perseveres in its state of rest, or of uniform motion in a right line, unless it is compelled to change that state by forces impressed thereon.'"
+  },
+  {
+    "question": "What is Newton's Second Law of Motion?",
+    "answer": "Law II states: 'The alteration of motion is ever proportional to the motive force impressed; and is made in the direction of the right line in which that force is impressed.'"
+  },
+  {
+    "question": "What is Newton's Third Law of Motion?",
+    "answer": "Law III states: 'To every action there is always opposed an equal reaction: or the mutual actions of two bodies upon each other are always equal, and directed to contrary parts.'"
+  },
+  {
+    "question": "According to Newton's four 'Rules of Reasoning in Philosophy', what principles should guide scientific inquiry?",
+    "answer": "Newton's rules are: \n1. Admit no more causes than are true and sufficient to explain phenomena. \n2. Assign the same causes to the same natural effects. \n3. Qualities found in all bodies within reach of experiments are to be esteemed universal qualities of all bodies. \n4. Propositions collected by induction from phenomena should be considered accurately or very nearly true until other phenomena make them more accurate or liable to exceptions."
+  },
+  {
+    "question": "What does Proposition I of Book III state about the forces acting on the moons of Jupiter?",
+    "answer": "It states: 'That the forces by which the circumjovial planets are continually drawn off from rectilinear motions, and retained in their proper orbits, tend to Jupiter's centre; and are reciprocally as the squares of the distances of the places of those planets from that centre.'"
+  },
+  {
+    "question": "How does Newton, in Proposition IV of Book III, conclude that the Moon is held in its orbit by the force of gravity?",
+    "answer": "Newton calculates the force needed to keep the moon in its orbit and how far it would cause the moon to 'fall' towards Earth in one minute (15 1/12 Paris feet). He then scales this force to the Earth's surface, accounting for the inverse-square law of distance, and calculates that a body at the surface should fall 15 feet, 1 inch, and 1 4/9 lines in one second. Since this matches the experimentally observed rate at which bodies fall on Earth, he concludes that the force retaining the Moon is 'that very same force which we commonly call gravity.'"
+  },
+  {
+    "question": "What conclusion does Newton draw in Proposition VI of Book III regarding the relationship between weight and quantity of matter?",
+    "answer": "He concludes 'That all bodies gravitate towards every planet; and that the weights of bodies towards any the same planet, at equal distances from the centre of the planet, are proportional to the quantities of matter which they severally contain.' He confirms this with experiments on pendulums made of gold, silver, lead, and other materials."
+  },
+  {
+    "question": "In the General Scholium at the end of Book III, what does Newton state about the cause of gravity?",
+    "answer": "Newton states that he has not been able to discover the cause of the properties of gravity from phenomena. He famously declares, 'and I frame no hypotheses; for whatever is not deduced from the phenomena is to be called an hypothesis; and hypotheses, whether metaphysical or physical, whether of occult qualities or mechanical, have no place in experimental philosophy.' He concludes it is enough that gravity exists and acts according to the laws he explained."
+  },
+  {
+    "question": "In the General Scholium, what is Newton's description of God?",
+    "answer": "Newton describes God not as the soul of the world, but as a 'living, intelligent, and powerful Being' who is 'eternal and infinite, omnipotent and omniscient.' He states that God 'governs all things, not as the soul of the world, but as Lord over all' and that this 'most beautiful system of the sun, planets, and comets, could only proceed from the counsel and dominion of an intelligent and powerful Being.'"
+  },
+  {
+    "question": "In his work 'The System of the World', how does Newton argue against the hypothesis of solid celestial orbs?",
+    "answer": "He states that 'the phenomena of comets can by no means consist with the notion of solid orbs.' The late observations which restored comets to the higher heavens 'were at once cleared of the incumbrance of solid orbs, which by these observations were broke into pieces, and discarded for ever.'"
+  },
+  {
+    "question": "How does Newton's theory explain the precession of the equinoxes?",
+    "answer": "Newton explains that the diurnal rotation of the planets causes their fluid parts to rise towards the equator, making the planets 'thicker about the equator than about the poles.' This equatorial bulge, when acted upon by the gravitational forces of the sun and moon, causes the equinoctial points to move backward, or 'recede'. He calculates this annual precession to be approximately 50 seconds of arc, which agrees with astronomical observations."
+  },
+  {
+    "question": "What is the origin of comets' tails according to Newton?",
+    "answer": "Newton concludes that a comet's tail is 'nothing else but a very fine vapour, which the head or nucleus of the comet emits by its heat' as it passes near the sun. He argues against theories of refraction or reflected sunbeams, noting that the tail's appearance and behavior are dependent on the comet's head and its proximity to the sun."
+  }
+]
